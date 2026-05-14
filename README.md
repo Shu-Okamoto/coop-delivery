@@ -1,114 +1,100 @@
-# 組合員間 共同配送マッチングシステム (Cloud版)
+# 組合員間 共同配送マップ (地図中心版)
 
-**Vercel + Render + Supabase** の3層構成で動かすクラウド版です。社内サーバー不要で、無料枠の範囲内で立ち上げられます。
+配達車両の現在地とルートを **Google Maps 上で確認** できる共同配送システムです。
+**Vercel + Render + Supabase** の3層構成で、無料枠の範囲内で立ち上げられます。
+
+## できること
+
+| 利用者 | 画面 | 機能 |
+|--------|------|------|
+| 組合員 | `/map` | 日付を指定するとその日の予定ルートを地図＋一覧で表示。車両の現在地が30秒ごとに更新される |
+| 管理者 | `/admin` | ルートの登録・編集・削除。経由地は組合員を選ぶと座標が自動入力。地図プレビュー付き |
+| ドライバー | `/driver` | PINでログイン → 担当ルート表示 → GPS送信 → 配達記録・完了写真アップロード・配達時刻保存 |
 
 ## アーキテクチャ
 
 ```
 [ブラウザ]
    ↓
-[Vercel] Next.js (App Router)         ← フロントエンド
+[Vercel] Next.js (App Router)          ← フロントエンド (web/)
    ↓ fetch (HTTPS)
-[Render] Express API                   ← バックエンド (マッチングロジック含む)
-   ↓ Supabase JS Client (Service Role Key)
-[Supabase] PostgreSQL                  ← データベース
+[Render] Express API                    ← バックエンド (api/)
+   ↓ Supabase JS Client
+[Supabase] PostgreSQL + Storage          ← DB + 完了写真 (db/)
+   ↑
+[Google Maps API]  ← フロントから直接利用 (地図表示・経路描画)
 ```
 
 | 層 | サービス | プラン | 役割 |
 |----|----------|--------|------|
-| フロント | Vercel | Hobby (無料) | Next.js 14 (App Router) |
-| API | Render | Free Web Service | Express + マッチングエンジン |
-| DB | Supabase | Free | PostgreSQL + RLS |
+| フロント | Vercel | Hobby (無料) | Next.js 14・地図表示 |
+| API | Render | Free Web Service | Express・ルートCRUD・位置記録・写真アップロード |
+| DB | Supabase | Free | PostgreSQL + Storage (完了写真) |
+| 地図 | Google Maps | 従量課金 (無料枠あり) | Maps JavaScript API + Directions API |
 
 ## ディレクトリ構成
 
 ```
 coop-delivery-cloud/
-├── api/                    # Render にデプロイする Express API
-│   ├── server.js
-│   ├── matching.js
+├── api/                          # Render にデプロイする Express API
+│   ├── server.js                 # APIサーバー本体
 │   ├── package.json
 │   ├── render.yaml
 │   └── .env.example
-├── web/                    # Vercel にデプロイする Next.js アプリ
+├── web/                          # Vercel にデプロイする Next.js アプリ
 │   ├── app/
-│   │   ├── page.tsx                # トップ
-│   │   ├── admin/                  # 管理画面
-│   │   │   ├── layout.tsx
-│   │   │   ├── page.tsx            # ダッシュボード
-│   │   │   ├── requests/page.tsx
-│   │   │   ├── match/page.tsx
-│   │   │   ├── routes/page.tsx
-│   │   │   └── members/page.tsx
-│   │   ├── driver/page.tsx         # ドライバー画面
-│   │   ├── globals.css
-│   │   └── layout.tsx
-│   ├── lib/api.ts
+│   │   ├── page.tsx              # トップ (各画面への入口)
+│   │   ├── map/page.tsx          # 配送マップ (組合員向け)
+│   │   ├── admin/
+│   │   │   ├── layout.tsx        # 管理画面レイアウト + パスワード認証
+│   │   │   ├── page.tsx          # ダッシュボード
+│   │   │   └── routes/
+│   │   │       ├── page.tsx      # ルート一覧
+│   │   │       ├── new/page.tsx  # 新規登録
+│   │   │       └── [id]/page.tsx # 編集
+│   │   ├── driver/page.tsx       # ドライバー画面
+│   │   ├── layout.tsx
+│   │   └── globals.css
+│   ├── components/
+│   │   ├── RouteMap.tsx          # Google Maps 表示コンポーネント
+│   │   ├── RouteForm.tsx         # ルート登録・編集フォーム (共用)
+│   │   └── PasswordGate.tsx      # 簡易パスワード認証ゲート
+│   ├── lib/
+│   │   ├── api.ts                # API クライアント
+│   │   ├── maps.ts               # Google Maps ローダー (npm依存なし)
+│   │   └── types.ts              # 共通型定義
+│   ├── types/
+│   │   └── google-maps-shim.d.ts # Google Maps 最小型定義
 │   ├── package.json
 │   ├── tsconfig.json
+│   ├── next.config.js
 │   └── .env.example
 ├── db/
-│   ├── schema.sql          # Supabase に流すスキーマ
-│   └── seed.sql            # サンプルデータ
+│   ├── schema.sql                # Supabase スキーマ
+│   └── seed.sql                  # サンプルデータ
 └── docs/
-    ├── DEPLOY.md           # 詳細なデプロイ手順
-    └── DESIGN.md           # 設計ドキュメント
+    ├── DEPLOY.md                 # 詳細なデプロイ手順
+    └── DESIGN.md                 # 設計ドキュメント
 ```
 
-## セットアップ (3つだけ)
+## セットアップ概要
 
-### 1. Supabase でプロジェクト作成
+詳細は `docs/DEPLOY.md` を参照。大まかな流れは:
 
-1. https://supabase.com/ にサインインし新規プロジェクト作成（リージョンは Tokyo 推奨）
-2. 左メニュー → **SQL Editor** を開く
-3. `db/schema.sql` の内容を貼り付け → Run
-4. `db/seed.sql` の内容を貼り付け → Run（サンプルデータ投入）
-5. 左メニュー → **Project Settings → API** から以下をメモ:
-   - `Project URL` (例: `https://xxx.supabase.co`)
-   - `service_role` Key（秘密鍵 — フロントエンドには絶対に置かない）
-
-### 2. Render に API をデプロイ
-
-1. https://render.com/ にサインインし、GitHubに `api/` の中身をプッシュ
-2. **New → Web Service** で当該リポジトリを選択
-3. 以下を設定:
-   - Root Directory: `api`
-   - Build Command: `npm install`
-   - Start Command: `npm start`
-   - Plan: Free
-4. **Environment** に環境変数を追加:
-   - `SUPABASE_URL` = (Supabaseの Project URL)
-   - `SUPABASE_SERVICE_ROLE_KEY` = (Supabaseの service_role Key)
-   - `CORS_ORIGIN` = `*` (一旦全許可。後でVercelのURLに絞る)
-5. Deploy 完了後、`https://xxx.onrender.com/api/health` にアクセスして `{"ok":true}` が返れば成功
-
-> **Render Free プランの注意**: 15分アクセスがないとスリープし、起動に20〜30秒かかります。常時稼働させたい場合は Starter プラン ($7/月) へ。
-
-### 3. Vercel に Web をデプロイ
-
-1. https://vercel.com/ にサインインし、`web/` の中身を別リポジトリ(または同リポのサブディレクトリ)にプッシュ
-2. **New Project** で当該リポジトリを選択
-3. Root Directory: `web` (サブディレクトリの場合)
-4. **Environment Variables** に追加:
-   - `NEXT_PUBLIC_API_BASE` = `https://xxx.onrender.com` (RenderのURL)
-5. Deploy 完了後、トップ画面が出れば成功
-
-### 4. (任意) CORSを絞る
-
-Renderの環境変数 `CORS_ORIGIN` を、Vercel の本番URL (例: `https://your-app.vercel.app`) に変更して再デプロイすると、API は Vercel からのリクエストのみ受け付けるようになります。複数許可は `,` 区切り。
+1. **Google Cloud** で Maps JavaScript API と Directions API を有効化し、APIキーを取得
+2. **Supabase** でプロジェクト作成 → `db/schema.sql` と `db/seed.sql` を SQL Editor で実行
+3. **Render** に `api/` をデプロイ → 環境変数（Supabase URL/Key・パスワード）を設定
+4. **Vercel** に `web/` をデプロイ → 環境変数（API URL・Google Maps キー）を設定
 
 ## ローカル開発
-
-### Supabaseは作成済みの前提で:
 
 **API側**
 ```bash
 cd api
 npm install
 cp .env.example .env
-# .env を編集して SUPABASE_URL と SUPABASE_SERVICE_ROLE_KEY を入れる
-npm run dev
-# → http://localhost:10000
+# .env を編集 (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, VIEWER_PASSWORD, ADMIN_PASSWORD)
+npm run dev          # → http://localhost:10000
 ```
 
 **Web側**
@@ -116,70 +102,62 @@ npm run dev
 cd web
 npm install
 cp .env.example .env.local
-# .env.local の NEXT_PUBLIC_API_BASE を http://localhost:10000 にする
-npm run dev
-# → http://localhost:3000
+# .env.local を編集 (NEXT_PUBLIC_API_BASE, NEXT_PUBLIC_GOOGLE_MAPS_KEY)
+npm run dev          # → http://localhost:3000
 ```
 
-## 主な機能
+## 認証の仕組み (簡易版)
 
-| 画面 | パス | 機能 |
-|------|------|------|
-| トップ | `/` | 各画面へのエントリー |
-| ダッシュボード | `/admin` | 未割当数・進行中ルート等の集計 |
-| 配送依頼 | `/admin/requests` | 依頼一覧・新規登録 |
-| マッチング | `/admin/match` | クラスタ半径と容量を指定して提案生成・ルート確定 |
-| ルート管理 | `/admin/routes` | 確定済みルートの詳細・コスト分担 |
-| 組合員 | `/admin/members` | 組合員一覧 |
-| ドライバー | `/driver` | スマホでルートを順に進行 |
+本バージョンは PoC・社内検証用のため、簡易パスワード認証です。
 
-## マッチングロジック
+- **組合員画面** (`/map`): `VIEWER_PASSWORD` で保護
+- **管理画面** (`/admin`): `ADMIN_PASSWORD` で保護（VIEWER でもアクセス可だが、CRUD は ADMIN のみ）
+- **ドライバー画面** (`/driver`): ドライバーごとの4桁 PIN（`drivers.pin_code`）
 
-`api/matching.js` に純粋関数として実装。
+パスワードは API 側の環境変数で管理し、フロントは `localStorage` に保持して各リクエストの `X-Viewer-Password` / `X-Driver-Pin` ヘッダーに付与します。
 
-1. 冷蔵要件でフィルタ
-2. 各依頼を seed として、集荷地または配達地が指定半径内の依頼を容量上限まで束ねる
-3. グループ内で「全 pickup → 全 delivery」を最近傍法で順序付け
-4. Haversine距離で総距離を概算
-5. 重量比例でコストを按分（既定 80円/km）
+本番運用前には Supabase Auth による正式な認証への移行を推奨します（`docs/DESIGN.md` 参照）。
 
-詳細は `docs/DESIGN.md` を参照。
+## 車両位置トラッキングの仕組み
+
+1. ドライバー画面で「GPS送信を開始」を押すと、`navigator.geolocation.watchPosition` で現在地を監視
+2. 30秒ごとに `POST /api/positions` で Render API に座標を送信
+3. `vehicle_positions` テーブルに追記され、`vehicle_latest_positions` ビューが各ルートの最新位置を保持
+4. 組合員の `/map` 画面が30秒ごとに `GET /api/positions/latest` をポーリングして地図に反映
+
+リアルタイム性は「30秒粒度」です。秒単位の追跡が必要になったら Supabase Realtime への移行を検討してください。
 
 ## API 仕様（抜粋）
 
-| メソッド | パス | 用途 |
-|----------|------|------|
-| GET  | `/api/health` | ヘルスチェック |
-| GET  | `/api/members` | 組合員一覧 |
-| POST | `/api/members` | 組合員登録 |
-| GET  | `/api/drivers` | ドライバー一覧 |
-| GET  | `/api/requests?status=pending` | 配送依頼一覧 |
-| POST | `/api/requests` | 配送依頼登録 |
-| POST | `/api/match/suggest` | マッチング提案生成 |
-| POST | `/api/routes` | ルート確定 |
-| GET  | `/api/routes/:id` | ルート詳細 |
-| POST | `/api/stops/:id/complete` | ストップ完了 |
-| GET  | `/api/stats` | ダッシュボード集計 |
+| メソッド | パス | 認証 | 用途 |
+|----------|------|------|------|
+| GET  | `/api/health` | なし | ヘルスチェック |
+| POST | `/api/auth/check` | なし | viewer/admin パスワード検証 |
+| POST | `/api/auth/driver` | なし | ドライバー PIN 検証 |
+| GET  | `/api/members` | なし | 組合員一覧 |
+| GET  | `/api/vehicles` | なし | 車両一覧 |
+| GET  | `/api/drivers` | なし | ドライバー一覧 |
+| GET  | `/api/routes?date=YYYY-MM-DD` | viewer | ルート一覧（日付フィルタ） |
+| GET  | `/api/routes/:id` | viewer | ルート詳細（経由地・最新位置含む） |
+| POST | `/api/routes` | admin | ルート登録 |
+| PUT  | `/api/routes/:id` | admin | ルート更新 |
+| DELETE | `/api/routes/:id` | admin | ルート削除 |
+| GET  | `/api/driver/routes` | driver PIN | 自分の担当ルート一覧 |
+| GET  | `/api/driver/routes/:id` | driver PIN | 自分の担当ルート詳細 |
+| POST | `/api/stops/:id/complete` | なし※ | 経由地完了（写真・メモ・時刻記録） |
+| POST | `/api/stops/:id/photo` | なし※ | 完了写真の差し替え |
+| POST | `/api/positions` | なし※ | 車両位置の記録 |
+| GET  | `/api/positions/latest?date=` | viewer | 指定日の全車両の最新位置 |
+| GET  | `/api/positions/history/:routeId` | viewer | ルートの位置履歴 |
+| GET  | `/api/stats` | viewer | ダッシュボード集計 |
 
-## セキュリティ上の注意
+※ ドライバー画面から呼ばれる前提で、簡易版では認証必須にしていません。本番では `X-Driver-Pin` 必須化を推奨。
 
-このバージョンは **PoC・社内検証用**です。本番運用前に以下を実装してください:
+## 既知の制約
 
-- **認証**: Supabase Auth でメール/パスワード認証を入れて、API側で JWT を検証する
-- **RLS強化**: `members` テーブルに `auth_user_id` を持たせ、ユーザーは自社の依頼しか見えないようにする
-- **HTTPSのみ**: Vercel/Render はデフォルトHTTPS
-- **監査ログ**: 重要操作（ルート確定・キャンセル）を別テーブルに記録
-- **Service Role Keyの管理**: Renderの環境変数のみで管理し、絶対にフロントエンドに置かない
-
-## コスト目安
-
-無料枠で運用可能ですが、本格運用時は:
-
-- **Vercel Hobby**: 無料 (商用利用は Pro $20/月)
-- **Render Free**: 無料 (スリープ対策に Starter $7/月)
-- **Supabase Free**: 500MB / 月50,000認証ユーザー (Pro $25/月で 8GB)
-
-合計で月 **$0〜$50** の範囲。
+- ルート更新（PUT）は経由地を「全削除して入れ直し」する実装のため、ドライバーが記録済みの完了状態が編集時に失われる可能性があります。フォーム側で既存の完了情報を保持して送り返すことで緩和していますが、本番では `stop_order` ベースの差分更新が望ましいです。
+- 複数テーブルにまたがる更新が単一トランザクションになっていません（Supabase JS Client の制約）。本番では Postgres 関数（`rpc`）化を推奨。
+- Render Free プランは15分でスリープし、コールドスタートに20〜30秒かかります。
 
 ## ライセンス
 
