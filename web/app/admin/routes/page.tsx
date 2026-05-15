@@ -1,91 +1,80 @@
 'use client';
-import { useEffect, useState } from 'react';
-import { apiGet, statusLabel } from '@/lib/api';
+import { useEffect, useState, useCallback } from 'react';
+import Link from 'next/link';
+import { apiGet, apiDelete, statusLabel, statusColor } from '@/lib/api';
+import type { Route } from '@/lib/types';
 
-type Route = {
-  id: number;
-  route_code: string;
-  scheduled_date: string;
-  driver_name: string;
-  driver_phone: string;
-  total_distance_km: number;
-  total_weight_kg: number;
-  status: string;
-};
-
-type RouteDetail = Route & {
-  stops: Array<{
-    id: number;
-    stop_order: number;
-    stop_type: string;
-    member_name: string;
-    cargo_description: string;
-    weight_kg: number;
-    refrigerated: boolean;
-    completed: boolean;
-  }>;
-  cost_shares: Array<{
-    shipper_name: string;
-    weight_share: number;
-    amount_yen: number;
-  }>;
-};
-
-export default function RoutesPage() {
+export default function AdminRoutesPage() {
+  const today = new Date().toISOString().slice(0, 10);
+  const [date, setDate] = useState('');
   const [routes, setRoutes] = useState<Route[]>([]);
-  const [detail, setDetail] = useState<RouteDetail | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => { apiGet<Route[]>('/api/routes').then(setRoutes); }, []);
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const q = date ? `?date=${date}` : '';
+      const data = await apiGet<Route[]>(`/api/routes${q}`);
+      setRoutes(data);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [date]);
 
-  const showDetail = async (id: number) => {
-    const d = await apiGet<RouteDetail>(`/api/routes/${id}`);
-    setDetail(d);
+  useEffect(() => { load(); }, [load]);
+
+  const del = async (r: Route) => {
+    if (!confirm(`ルート「${r.name}」を削除しますか？\nこの操作は取り消せません。`)) return;
+    try {
+      await apiDelete(`/api/routes/${r.id}`);
+      load();
+    } catch (e: any) {
+      alert('削除失敗: ' + e.message);
+    }
   };
 
   return (
     <>
       <h2>ルート管理</h2>
-      {routes.length === 0 ? (
-        <p>確定済みルートはまだありません</p>
-      ) : (
-        routes.map((r) => (
-          <div className="card" key={r.id} style={{ cursor: 'pointer' }} onClick={() => showDetail(r.id)}>
-            <strong>{r.route_code}</strong> — {r.scheduled_date}{' '}
-            <span className={`status-${r.status}`}>[{statusLabel(r.status)}]</span><br />
-            ドライバー: {r.driver_name || '-'} / 距離: {r.total_distance_km || '?'}km / 重量: {r.total_weight_kg}kg
-          </div>
-        ))
-      )}
+      <div className="toolbar">
+        <label>
+          日付フィルタ:{' '}
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </label>
+        {date && <button className="btn secondary small" onClick={() => setDate('')}>クリア</button>}
+        <button className="btn small" onClick={load}>再読込</button>
+        <Link href="/admin/routes/new" className="btn small">＋ 新規ルート</Link>
+      </div>
 
-      {detail && (
-        <div className="card">
-          <h3>{detail.route_code} の詳細</h3>
-          <p>ドライバー: {detail.driver_name} ({detail.driver_phone || '-'}) / 状態: {statusLabel(detail.status)}</p>
-          <ol className="stops">
-            {detail.stops.map((s) => (
-              <li key={s.id} className={s.stop_type}>
-                <span className="stop-num">{s.stop_order}</span>
-                {s.stop_type === 'pickup' ? '🟠 集荷' : '🟢 配達'}: {s.member_name}{' '}
-                ({s.weight_kg}kg {s.refrigerated ? '❄️' : ''})
-                {s.completed && ' ✅ 完了'}
-              </li>
-            ))}
-          </ol>
-          <h4>コスト分担</h4>
-          <table style={{ fontSize: 12 }}>
-            <thead><tr><th>負担者</th><th>割合</th><th>金額</th></tr></thead>
-            <tbody>
-              {detail.cost_shares.map((c, i) => (
-                <tr key={i}>
-                  <td>{c.shipper_name}</td>
-                  <td>{(c.weight_share * 100).toFixed(1)}%</td>
-                  <td>¥{c.amount_yen.toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {error && <div className="error-box">{error}</div>}
+      {loading && <p>読込中...</p>}
+      {!loading && routes.length === 0 && <p className="empty">ルートがありません</p>}
+
+      {routes.map((r) => (
+        <div key={r.id} className="route-item">
+          <div className="info">
+            <div className="title">
+              {r.name}{' '}
+              <span className="badge" style={{ background: statusColor(r.status) }}>
+                {statusLabel(r.status)}
+              </span>
+            </div>
+            <div className="sub">
+              {r.route_code} / {r.scheduled_date}
+              {r.planned_start_time && ` ${r.planned_start_time}`}
+              {' '}/ ドライバー: {r.driver_name || '未割当'} / 車両: {r.vehicle_name || '未割当'}
+            </div>
+          </div>
+          <div className="actions">
+            <Link href={`/admin/routes/${r.id}`} className="btn small">編集</Link>
+            <button className="btn danger small" onClick={() => del(r)}>削除</button>
+          </div>
         </div>
-      )}
+      ))}
     </>
   );
 }
