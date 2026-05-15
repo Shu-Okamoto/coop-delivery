@@ -1,363 +1,471 @@
 /**
- * 組合員間共同配送 API
- * Render向け / Supabase (PostgreSQL) 接続
+ * 組合員間共同配送 API (地図中心版)
+ *
+ * 主な機能:
+ *  - ルート CRUD (登録・編集・削除・一覧・詳細)
+ *  - 経由地 CRUD
+ *  - 車両位置のポーリング (POST: ドライバー / GET: 組合員・管理画面)
+ *  - 完了写真アップロード (Supabase Storage)
+ *  - 簡易パスワード認証 (組合員閲覧画面用)
  */
 require('dotenv').config();
+
+// Node.js 20 では WebSocket がグローバルに存在しないため、
+// @supabase/supabase-js の起動時チェックで落ちることがある。
+// このAPIは Supabase Realtime を使わないが、念のため ws で補完しておく。
+if (typeof globalThis.WebSocket === 'undefined') {
+  try {
+    globalThis.WebSocket = require('ws');
+  } catch (e) {
+    console.warn('⚠️ ws パッケージが見つかりません。Node 22 以上なら不要です。');
+  }
+}
+
 const express = require('express');
 const cors = require('cors');
+const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
-const matching = require('./matching');
 
 const PORT = process.env.PORT || 10000;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const VIEWER_PASSWORD = process.env.VIEWER_PASSWORD || 'change-me';
+const ADMIN_PASSWORD  = process.env.ADMIN_PASSWORD  || 'change-me-admin';
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-  console.error('❌ 環境変数 SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY が未設定です');
+  console.error('❌ SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY が未設定です');
   process.exit(1);
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
+  // このAPIは REST と Storage のみ使用。Realtime(WebSocket) は不要なので
+  // 接続を張らないよう最小設定にする。
+  realtime: { params: { eventsPerSecond: 1 } },
+  global: { headers: { 'x-application-name': 'coop-delivery-api' } },
 });
 
 const app = express();
 
-// CORS — VercelフロントのURLを CORS_ORIGIN に設定
+// CORS
 const allowedOrigins = (process.env.CORS_ORIGIN || '*').split(',').map(s => s.trim());
 app.use(cors({
   origin: (origin, cb) => {
-    if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
-      return cb(null, true);
-    }
+    if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) return cb(null, true);
     cb(new Error(`CORS blocked: ${origin}`));
   },
 }));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
-// エラーをまとめてJSONで返すラッパー
-const wrap = (fn) => (req, res) => {
-  Promise.resolve(fn(req, res)).catch((e) => {
-    console.error(e);
-    res.status(500).json({ error: e.message });
-  });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
+// 共通エラーラッパ
+const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((e) => {
+  console.error(e);
+  res.status(500).json({ error: e.message });
+});
+
+// ===== 認証 (簡易パスワード) =====
+// X-Viewer-Password ヘッダーで viewer/driver/admin を判定
+function checkPassword(req, kind) {
+  const pw = req.header('X-Viewer-Password') || req.query.password || '';
+  if (kind === 'admin' && pw === ADMIN_PASSWORD)  return true;
+  if (kind === 'viewer' && (pw === VIEWER_PASSWORD || pw === ADMIN_PASSWORD)) return true;
+  return false;
+}
+
+const requireViewer = (req, res, next) => {
+  if (!checkPassword(req, 'viewer')) return res.status(401).json({ error: 'パスワードが違います' });
+  next();
 };
+const requireAdmin = (req, res, next) => {
+  if (!checkPassword(req, 'admin')) return res.status(401).json({ error: '管理者パスワードが違います' });
+  next();
+};
+
+// パスワード検証専用エンドポイント
+app.post('/api/auth/check', wrap(async (req, res) => {
+  const { password, role } = req.body;
+  if (role === 'admin' && password === ADMIN_PASSWORD) return res.json({ ok: true, role: 'admin' });
+  if (role === 'viewer' && (password === VIEWER_PASSWORD || password === ADMIN_PASSWORD)) {
+    return res.json({ ok: true, role: 'viewer' });
+  }
+  res.status(401).json({ ok: false, error: 'パスワードが違います' });
+}));
+
+// ドライバーPIN認証
+app.post('/api/auth/driver', wrap(async (req, res) => {
+  const { pin } = req.body;
+  if (!pin) return res.status(400).json({ error: 'PINが必要です' });
+  const { data, error } = await supabase
+    .from('drivers').select('id,name,phone').eq('pin_code', pin).eq('active', true).single();
+  if (error || !data) return res.status(401).json({ error: 'PINが違います' });
+  res.json({ ok: true, driver: data });
+}));
+
+// ドライバー認証ミドルウェア (X-Driver-Pin ヘッダーで判定)
+async function requireDriver(req, res, next) {
+  const pin = req.header('X-Driver-Pin') || '';
+  if (!pin) return res.status(401).json({ error: 'ドライバー認証が必要です' });
+  const { data, error } = await supabase
+    .from('drivers').select('id,name').eq('pin_code', pin).eq('active', true).single();
+  if (error || !data) return res.status(401).json({ error: 'PINが無効です' });
+  req.driver = data;
+  next();
+}
+
+// ドライバー専用: 自分の担当ルート一覧 (本日 or 日付指定)
+app.get('/api/driver/routes', requireDriver, wrap(async (req, res) => {
+  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const { data, error } = await supabase
+    .from('routes')
+    .select('*, vehicles(name,plate_number)')
+    .eq('driver_id', req.driver.id)
+    .eq('scheduled_date', date)
+    .neq('status', 'cancelled')
+    .order('planned_start_time', { ascending: true });
+  if (error) throw error;
+  res.json(data.map(r => ({
+    ...r,
+    vehicle_name: r.vehicles?.name,
+    vehicle_plate: r.vehicles?.plate_number,
+  })));
+}));
+
+// ドライバー専用: ルート詳細
+app.get('/api/driver/routes/:id', requireDriver, wrap(async (req, res) => {
+  const { data: route, error: e1 } = await supabase
+    .from('routes')
+    .select('*, vehicles(name,plate_number)')
+    .eq('id', req.params.id)
+    .eq('driver_id', req.driver.id)
+    .single();
+  if (e1 || !route) return res.status(404).json({ error: 'not found' });
+
+  const { data: stops, error: e2 } = await supabase
+    .from('route_stops').select('*, members(name)')
+    .eq('route_id', req.params.id).order('stop_order');
+  if (e2) throw e2;
+
+  res.json({
+    ...route,
+    vehicle_name: route.vehicles?.name,
+    vehicle_plate: route.vehicles?.plate_number,
+    stops: stops.map(s => ({ ...s, member_name: s.members?.name })),
+  });
+}));
 
 // ===== ヘルスチェック =====
 app.get('/api/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
-// ===== 組合員 =====
+// ===== マスタ系 =====
 app.get('/api/members', wrap(async (req, res) => {
   const { data, error } = await supabase.from('members').select('*').order('id');
   if (error) throw error;
   res.json(data);
 }));
 
-app.post('/api/members', wrap(async (req, res) => {
-  const { data, error } = await supabase.from('members').insert(req.body).select().single();
+app.get('/api/vehicles', wrap(async (req, res) => {
+  const { data, error } = await supabase.from('vehicles').select('*').eq('active', true).order('id');
   if (error) throw error;
   res.json(data);
 }));
 
-// ===== ドライバー =====
 app.get('/api/drivers', wrap(async (req, res) => {
-  const { data, error } = await supabase
-    .from('drivers')
-    .select('*, members(name)')
-    .eq('active', true)
-    .order('id');
-  if (error) throw error;
-  // members(name) を member_name にフラット化
-  res.json(data.map(d => ({ ...d, member_name: d.members?.name })));
-}));
-
-app.post('/api/drivers', wrap(async (req, res) => {
-  const { data, error } = await supabase.from('drivers').insert(req.body).select().single();
+  const { data, error } = await supabase.from('drivers').select('id,name,phone,active').eq('active', true).order('id');
   if (error) throw error;
   res.json(data);
 }));
 
-// ===== 配送依頼 =====
-app.get('/api/requests', wrap(async (req, res) => {
-  let q = supabase
-    .from('delivery_requests')
-    .select(`
-      *,
-      shipper:members!delivery_requests_shipper_id_fkey(name,address),
-      receiver:members!delivery_requests_receiver_id_fkey(name,address)
-    `)
-    .order('pickup_window_start');
-  if (req.query.status) q = q.eq('status', req.query.status);
-  const { data, error } = await q;
-  if (error) throw error;
-  res.json(data.map(r => ({
-    ...r,
-    shipper_name: r.shipper?.name,
-    shipper_address: r.shipper?.address,
-    receiver_name: r.receiver?.name,
-    receiver_address: r.receiver?.address,
-  })));
-}));
+// ===== ルート CRUD =====
 
-app.post('/api/requests', wrap(async (req, res) => {
-  const r = req.body;
-  // 集荷地・配達地は所属する組合員から自動セット
-  const { data: shipper, error: e1 } = await supabase.from('members').select('*').eq('id', r.shipper_id).single();
-  const { data: receiver, error: e2 } = await supabase.from('members').select('*').eq('id', r.receiver_id).single();
-  if (e1 || e2 || !shipper || !receiver) {
-    return res.status(400).json({ error: '組合員が見つかりません' });
-  }
-  const code = 'REQ-' + Date.now().toString(36).toUpperCase();
-  const payload = {
-    request_code: code,
-    shipper_id: r.shipper_id,
-    receiver_id: r.receiver_id,
-    pickup_address: shipper.address,
-    pickup_lat: shipper.lat,
-    pickup_lng: shipper.lng,
-    delivery_address: receiver.address,
-    delivery_lat: receiver.lat,
-    delivery_lng: receiver.lng,
-    pickup_window_start: r.pickup_window_start,
-    pickup_window_end: r.pickup_window_end,
-    delivery_deadline: r.delivery_deadline,
-    weight_kg: r.weight_kg,
-    volume_m3: r.volume_m3 || null,
-    refrigerated: !!r.refrigerated,
-    cargo_description: r.cargo_description || null,
-  };
-  const { data, error } = await supabase.from('delivery_requests').insert(payload).select().single();
-  if (error) throw error;
-  res.json(data);
-}));
-
-// ===== マッチング提案 =====
-app.post('/api/match/suggest', wrap(async (req, res) => {
-  const { date, max_radius_km, capacity_kg, refrigerated } = req.body;
-
-  // 指定日の pending 依頼を取得 (JST想定)
-  const dayStart = `${date}T00:00:00+09:00`;
-  const dayEnd   = `${date}T23:59:59+09:00`;
-
-  const { data: requests, error } = await supabase
-    .from('delivery_requests')
-    .select('*')
-    .eq('status', 'pending')
-    .gte('pickup_window_start', dayStart)
-    .lte('pickup_window_start', dayEnd);
-  if (error) throw error;
-
-  if (!requests || requests.length === 0) {
-    return res.json({ groups: [], message: '対象日の未割当依頼がありません' });
-  }
-
-  const groups = matching.clusterRequests(requests, {
-    maxRadiusKm: max_radius_km || 15,
-    capacityKg: capacity_kg || 1000,
-    refrigerated: !!refrigerated,
-  });
-
-  const proposals = groups.map((group, idx) => {
-    const stops = matching.buildStopSequence(group);
-    const distance = matching.estimateDistance(stops);
-    const shares = matching.calcCostShares(group, distance);
-    return {
-      group_index: idx + 1,
-      request_count: group.length,
-      total_weight_kg: group.reduce((s, r) => s + Number(r.weight_kg), 0),
-      estimated_distance_km: distance,
-      stops,
-      cost_shares: shares,
-      request_ids: group.map((r) => r.id),
-    };
-  });
-
-  res.json({ date, groups: proposals });
-}));
-
-// ===== ルート確定 =====
-app.post('/api/routes', wrap(async (req, res) => {
-  const { driver_id, scheduled_date, request_ids, stops, total_distance_km, cost_shares } = req.body;
-  const code = 'RT-' + Date.now().toString(36).toUpperCase();
-
-  // 重量集計
-  const { data: reqRows, error: e0 } = await supabase
-    .from('delivery_requests').select('id,weight_kg').in('id', request_ids);
-  if (e0) throw e0;
-  const totalWeight = reqRows.reduce((s, r) => s + Number(r.weight_kg), 0);
-
-  // 1) routes
-  const { data: route, error: e1 } = await supabase
-    .from('routes')
-    .insert({
-      route_code: code,
-      driver_id,
-      scheduled_date,
-      total_distance_km,
-      total_weight_kg: totalWeight,
-      status: 'planned',
-    })
-    .select()
-    .single();
-  if (e1) throw e1;
-
-  // 2) route_stops
-  const stopRows = stops.map((s, i) => ({
-    route_id: route.id,
-    stop_order: i + 1,
-    stop_type: s.stop_type,
-    request_id: s.request_id,
-    member_id: s.member_id,
-    address: s.address,
-    lat: s.lat,
-    lng: s.lng,
-    scheduled_time: s.scheduled_time || null,
-  }));
-  const { error: e2 } = await supabase.from('route_stops').insert(stopRows);
-  if (e2) throw e2;
-
-  // 3) cost_shares
-  if (cost_shares && cost_shares.length > 0) {
-    const costRows = cost_shares.map((c) => ({
-      route_id: route.id,
-      request_id: c.request_id,
-      shipper_id: c.shipper_id,
-      weight_share: c.weight_share,
-      amount_yen: c.amount_yen,
-    }));
-    const { error: e3 } = await supabase.from('cost_shares').insert(costRows);
-    if (e3) throw e3;
-  }
-
-  // 4) 依頼ステータス更新
-  const { error: e4 } = await supabase
-    .from('delivery_requests')
-    .update({ status: 'matched', matched_route_id: route.id })
-    .in('id', request_ids);
-  if (e4) throw e4;
-
-  res.json({ route_id: route.id, route_code: code });
-}));
-
-app.get('/api/routes', wrap(async (req, res) => {
+// 一覧 (日付指定で絞り込み・組合員も閲覧可)
+app.get('/api/routes', requireViewer, wrap(async (req, res) => {
   let q = supabase
     .from('routes')
-    .select('*, drivers(name,phone)')
+    .select('*, drivers(name,phone), vehicles(name,plate_number,vehicle_type)')
     .order('scheduled_date', { ascending: false })
-    .order('id', { ascending: false });
+    .order('planned_start_time', { ascending: true });
   if (req.query.date) q = q.eq('scheduled_date', req.query.date);
+  if (req.query.status) q = q.eq('status', req.query.status);
   const { data, error } = await q;
   if (error) throw error;
   res.json(data.map(r => ({
     ...r,
     driver_name: r.drivers?.name,
     driver_phone: r.drivers?.phone,
+    vehicle_name: r.vehicles?.name,
+    vehicle_plate: r.vehicles?.plate_number,
   })));
 }));
 
-app.get('/api/routes/:id', wrap(async (req, res) => {
+// 詳細 (経由地・最新位置を含む)
+app.get('/api/routes/:id', requireViewer, wrap(async (req, res) => {
   const { data: route, error: e1 } = await supabase
     .from('routes')
-    .select('*, drivers(name,phone)')
-    .eq('id', req.params.id)
-    .single();
+    .select('*, drivers(name,phone), vehicles(name,plate_number,vehicle_type,capacity_kg,refrigerated)')
+    .eq('id', req.params.id).single();
   if (e1 || !route) return res.status(404).json({ error: 'not found' });
 
   const { data: stops, error: e2 } = await supabase
-    .from('route_stops')
-    .select(`
-      *,
-      members(name),
-      delivery_requests(cargo_description, weight_kg, refrigerated)
-    `)
-    .eq('route_id', req.params.id)
-    .order('stop_order');
+    .from('route_stops').select('*, members(name)')
+    .eq('route_id', req.params.id).order('stop_order');
   if (e2) throw e2;
 
-  const { data: costs, error: e3 } = await supabase
-    .from('cost_shares')
-    .select('*, members(name)')
-    .eq('route_id', req.params.id);
-  if (e3) throw e3;
+  const { data: latest } = await supabase
+    .from('vehicle_latest_positions').select('*').eq('route_id', req.params.id).maybeSingle();
 
   res.json({
     ...route,
     driver_name: route.drivers?.name,
     driver_phone: route.drivers?.phone,
-    stops: stops.map(s => ({
-      ...s,
-      member_name: s.members?.name,
-      cargo_description: s.delivery_requests?.cargo_description,
-      weight_kg: s.delivery_requests?.weight_kg,
-      refrigerated: s.delivery_requests?.refrigerated,
-    })),
-    cost_shares: costs.map(c => ({ ...c, shipper_name: c.members?.name })),
+    vehicle_name: route.vehicles?.name,
+    vehicle_plate: route.vehicles?.plate_number,
+    stops: stops.map(s => ({ ...s, member_name: s.members?.name })),
+    latest_position: latest || null,
   });
 }));
 
-// ===== ストップ完了 =====
-app.post('/api/stops/:id/complete', wrap(async (req, res) => {
-  const stopId = +req.params.id;
-  const { data: stop, error: e0 } = await supabase
-    .from('route_stops').select('route_id').eq('id', stopId).single();
-  if (e0 || !stop) return res.status(404).json({ error: 'stop not found' });
+// 作成 (ルート + 経由地)
+app.post('/api/routes', requireAdmin, wrap(async (req, res) => {
+  const { name, scheduled_date, driver_id, vehicle_id, planned_start_time, notes, stops } = req.body;
+  if (!name || !scheduled_date || !stops || stops.length === 0) {
+    return res.status(400).json({ error: 'name, scheduled_date, stops は必須です' });
+  }
 
-  const { error: e1 } = await supabase
-    .from('route_stops')
-    .update({ completed: true, actual_time: new Date().toISOString(), notes: req.body.notes || null })
-    .eq('id', stopId);
+  const code = 'RT-' + Date.now().toString(36).toUpperCase();
+  const { data: route, error: e1 } = await supabase.from('routes').insert({
+    route_code: code, name, scheduled_date,
+    driver_id: driver_id || null, vehicle_id: vehicle_id || null,
+    planned_start_time: planned_start_time || null, notes: notes || null,
+    status: 'planned',
+  }).select().single();
   if (e1) throw e1;
 
-  // 残ストップ確認
-  const { count, error: e2 } = await supabase
-    .from('route_stops')
-    .select('id', { count: 'exact', head: true })
-    .eq('route_id', stop.route_id)
-    .eq('completed', false);
-  if (e2) throw e2;
+  const stopRows = stops.map((s, i) => ({
+    route_id: route.id,
+    stop_order: i + 1,
+    stop_type: s.stop_type,
+    member_id: s.member_id || null,
+    address: s.address,
+    lat: s.lat,
+    lng: s.lng,
+    cargo_description: s.cargo_description || null,
+    weight_kg: s.weight_kg || null,
+    refrigerated: !!s.refrigerated,
+    scheduled_time: s.scheduled_time || null,
+  }));
+  const { error: e2 } = await supabase.from('route_stops').insert(stopRows);
+  if (e2) {
+    await supabase.from('routes').delete().eq('id', route.id);
+    throw e2;
+  }
+  res.json({ id: route.id, route_code: code });
+}));
 
-  if (count === 0) {
-    // 全完了
-    await supabase
-      .from('routes')
-      .update({ status: 'completed', end_time: new Date().toISOString() })
-      .eq('id', stop.route_id);
-    await supabase
-      .from('delivery_requests')
-      .update({ status: 'delivered' })
-      .eq('matched_route_id', stop.route_id);
-  } else {
-    await supabase
-      .from('routes')
-      .update({ status: 'in_progress' })
-      .eq('id', stop.route_id)
-      .eq('status', 'planned');
+// 更新 (ルート + 経由地を全置換)
+app.put('/api/routes/:id', requireAdmin, wrap(async (req, res) => {
+  const id = +req.params.id;
+  const { name, scheduled_date, driver_id, vehicle_id, planned_start_time, notes, status, stops } = req.body;
+
+  const { error: e1 } = await supabase.from('routes').update({
+    name, scheduled_date,
+    driver_id: driver_id || null, vehicle_id: vehicle_id || null,
+    planned_start_time: planned_start_time || null, notes: notes || null,
+    status: status || 'planned',
+    updated_at: new Date().toISOString(),
+  }).eq('id', id);
+  if (e1) throw e1;
+
+  if (Array.isArray(stops)) {
+    // 既存ストップを全削除して入れ直し (シンプルだが完了状態は失われる)
+    // 実運用は stop_order ベースで差分更新したほうが良いが、PoCではこれで十分
+    await supabase.from('route_stops').delete().eq('route_id', id);
+    const stopRows = stops.map((s, i) => ({
+      route_id: id,
+      stop_order: i + 1,
+      stop_type: s.stop_type,
+      member_id: s.member_id || null,
+      address: s.address,
+      lat: s.lat,
+      lng: s.lng,
+      cargo_description: s.cargo_description || null,
+      weight_kg: s.weight_kg || null,
+      refrigerated: !!s.refrigerated,
+      scheduled_time: s.scheduled_time || null,
+      completed: !!s.completed,
+      completed_at: s.completed_at || null,
+      arrived_at: s.arrived_at || null,
+      notes: s.notes || null,
+      photo_url: s.photo_url || null,
+    }));
+    if (stopRows.length > 0) {
+      const { error: e2 } = await supabase.from('route_stops').insert(stopRows);
+      if (e2) throw e2;
+    }
   }
   res.json({ ok: true });
 }));
 
-// ===== ダッシュボード集計 =====
-app.get('/api/stats', wrap(async (req, res) => {
-  const today = new Date().toISOString().slice(0, 10);
+// 削除
+app.delete('/api/routes/:id', requireAdmin, wrap(async (req, res) => {
+  const { error } = await supabase.from('routes').delete().eq('id', req.params.id);
+  if (error) throw error;
+  res.json({ ok: true });
+}));
 
+// ===== 経由地 (個別更新・写真アップロード等) =====
+
+// ストップ完了 (写真任意)
+app.post('/api/stops/:id/complete', upload.single('photo'), wrap(async (req, res) => {
+  const stopId = +req.params.id;
+  const notes = req.body?.notes || null;
+  let photoUrl = null;
+
+  if (req.file) {
+    const ext = (req.file.originalname.split('.').pop() || 'jpg').toLowerCase();
+    const fileName = `stop_${stopId}_${Date.now()}.${ext}`;
+    const { error: upErr } = await supabase.storage
+      .from('delivery-photos')
+      .upload(fileName, req.file.buffer, {
+        contentType: req.file.mimetype,
+        upsert: true,
+      });
+    if (upErr) throw upErr;
+    const { data: pub } = supabase.storage.from('delivery-photos').getPublicUrl(fileName);
+    photoUrl = pub.publicUrl;
+  }
+
+  // ストップを完了に更新
+  const { data: stop, error: e0 } = await supabase
+    .from('route_stops').select('route_id').eq('id', stopId).single();
+  if (e0 || !stop) return res.status(404).json({ error: 'stop not found' });
+
+  const update = {
+    completed: true,
+    completed_at: new Date().toISOString(),
+    arrived_at: new Date().toISOString(),
+    notes,
+  };
+  if (photoUrl) update.photo_url = photoUrl;
+
+  const { error: e1 } = await supabase.from('route_stops').update(update).eq('id', stopId);
+  if (e1) throw e1;
+
+  // ルート全体の完了判定
+  const { count } = await supabase
+    .from('route_stops').select('id', { count: 'exact', head: true })
+    .eq('route_id', stop.route_id).eq('completed', false);
+
+  if (count === 0) {
+    await supabase.from('routes').update({
+      status: 'completed', end_time: new Date().toISOString(),
+    }).eq('id', stop.route_id);
+  } else {
+    // 進行中に切替 (最初のストップ完了時だけ)
+    await supabase.from('routes').update({
+      status: 'in_progress',
+      start_time: new Date().toISOString(),
+    }).eq('id', stop.route_id).eq('status', 'planned');
+  }
+
+  res.json({ ok: true, photo_url: photoUrl });
+}));
+
+// 写真だけ追加 (再撮影用)
+app.post('/api/stops/:id/photo', upload.single('photo'), wrap(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'photoが必要です' });
+  const stopId = +req.params.id;
+  const ext = (req.file.originalname.split('.').pop() || 'jpg').toLowerCase();
+  const fileName = `stop_${stopId}_${Date.now()}.${ext}`;
+  const { error: upErr } = await supabase.storage
+    .from('delivery-photos')
+    .upload(fileName, req.file.buffer, { contentType: req.file.mimetype, upsert: true });
+  if (upErr) throw upErr;
+  const { data: pub } = supabase.storage.from('delivery-photos').getPublicUrl(fileName);
+  await supabase.from('route_stops').update({ photo_url: pub.publicUrl }).eq('id', stopId);
+  res.json({ ok: true, photo_url: pub.publicUrl });
+}));
+
+// ===== 車両位置 =====
+
+// ドライバーが定期的に POST
+app.post('/api/positions', wrap(async (req, res) => {
+  const { route_id, vehicle_id, driver_id, lat, lng, heading, speed_kmh } = req.body;
+  if (!route_id || lat == null || lng == null) {
+    return res.status(400).json({ error: 'route_id, lat, lng は必須です' });
+  }
+  const { error } = await supabase.from('vehicle_positions').insert({
+    route_id, vehicle_id: vehicle_id || null, driver_id: driver_id || null,
+    lat, lng, heading: heading || null, speed_kmh: speed_kmh || null,
+  });
+  if (error) throw error;
+  res.json({ ok: true });
+}));
+
+// ある日付の全ルートの最新位置 (組合員用マップ画面)
+app.get('/api/positions/latest', requireViewer, wrap(async (req, res) => {
+  const date = req.query.date;
+  let routesQ = supabase.from('routes').select('id,route_code,name,status,driver_id,vehicle_id,drivers(name),vehicles(name)');
+  if (date) routesQ = routesQ.eq('scheduled_date', date);
+  const { data: routes, error: e1 } = await routesQ;
+  if (e1) throw e1;
+  if (!routes || routes.length === 0) return res.json([]);
+
+  const ids = routes.map(r => r.id);
+  const { data: positions, error: e2 } = await supabase
+    .from('vehicle_latest_positions').select('*').in('route_id', ids);
+  if (e2) throw e2;
+
+  const merged = routes.map(r => {
+    const p = positions?.find(x => x.route_id === r.id);
+    return {
+      route_id: r.id,
+      route_code: r.route_code,
+      route_name: r.name,
+      status: r.status,
+      driver_name: r.drivers?.name,
+      vehicle_name: r.vehicles?.name,
+      lat: p?.lat || null,
+      lng: p?.lng || null,
+      heading: p?.heading,
+      recorded_at: p?.recorded_at || null,
+    };
+  });
+  res.json(merged);
+}));
+
+// あるルートの位置履歴 (ルート再生用)
+app.get('/api/positions/history/:routeId', requireViewer, wrap(async (req, res) => {
+  const { data, error } = await supabase
+    .from('vehicle_positions').select('lat,lng,recorded_at')
+    .eq('route_id', req.params.routeId)
+    .order('recorded_at', { ascending: true });
+  if (error) throw error;
+  res.json(data);
+}));
+
+// ===== 集計 =====
+app.get('/api/stats', requireViewer, wrap(async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
   const counts = await Promise.all([
-    supabase.from('delivery_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
-    supabase.from('routes').select('id', { count: 'exact', head: true }).in('status', ['planned','in_progress']),
-    supabase.from('routes').select('id', { count: 'exact', head: true }).eq('status', 'completed').eq('scheduled_date', today),
+    supabase.from('routes').select('id', { count: 'exact', head: true }).eq('scheduled_date', today),
+    supabase.from('routes').select('id', { count: 'exact', head: true }).eq('scheduled_date', today).in('status', ['planned','in_progress']),
+    supabase.from('routes').select('id', { count: 'exact', head: true }).eq('scheduled_date', today).eq('status', 'completed'),
     supabase.from('members').select('id', { count: 'exact', head: true }),
     supabase.from('drivers').select('id', { count: 'exact', head: true }).eq('active', true),
+    supabase.from('vehicles').select('id', { count: 'exact', head: true }).eq('active', true),
   ]);
-
   res.json({
-    pending_requests: counts[0].count || 0,
-    active_routes:    counts[1].count || 0,
-    completed_today:  counts[2].count || 0,
-    total_members:    counts[3].count || 0,
-    total_drivers:    counts[4].count || 0,
+    today_routes:    counts[0].count || 0,
+    today_active:    counts[1].count || 0,
+    today_completed: counts[2].count || 0,
+    total_members:   counts[3].count || 0,
+    total_drivers:   counts[4].count || 0,
+    total_vehicles:  counts[5].count || 0,
   });
 }));
 
 app.listen(PORT, () => {
   console.log(`🚚 API起動: ポート ${PORT}`);
-  console.log(`   ヘルスチェック: /api/health`);
 });

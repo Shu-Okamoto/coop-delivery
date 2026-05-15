@@ -1,144 +1,170 @@
-# 設計ドキュメント (Cloud版)
+# 設計ドキュメント (地図中心版)
 
-## なぜこの構成か
+## このバージョンの位置づけ
 
-### Vercel + Render + Supabase に分けた理由
+初期版はマッチング機能が中心だったが、実運用で本当に必要なのは
+「**今どの車両がどこにいて、今日の予定ルートはどうなっているか**」を
+組合員・管理者・ドライバーが同じ地図で見られること、という結論に至った。
+そのため地図表示・位置トラッキング・配達記録を主機能に据え直した。
 
-3つに分けることで、それぞれの強みを活かしつつ、それぞれの**ロックイン**も最小化できます。
+## 利用者と主要動線
 
-| 層 | 選定理由 | 代替候補 |
-|----|----------|----------|
-| Vercel (フロント) | Next.js の本家。プレビューデプロイが秒速 | Netlify, Cloudflare Pages |
-| Render (API) | 無料Dockerホスティング。MCP連携も容易 | Fly.io, Railway, Heroku |
-| Supabase (DB+α) | Postgres + Auth + Realtime + Storage が無料枠で揃う | Neon, PlanetScale |
+| 役割 | 入口 | やること |
+|------|------|----------|
+| 組合員 | `/map` | 日付を選び、その日の予定ルートと車両現在地を地図＋一覧で確認 |
+| 管理者 | `/admin` | ルートの登録・編集・削除。経由地の順序組み立て |
+| ドライバー | `/driver` | PINログイン → GPS送信開始 → 経由地ごとに配達記録・写真・完了 |
 
-API層を Vercel Functions ではなく Render に切り出した理由:
-- マッチングロジックを将来重くしたとき（OSRM呼び出し・最適化ソルバ）に **タイムアウト 10秒制限** に引っかかりにくい
-- 常時接続のWebSocketや cron 処理を後で足したくなったとき柔軟
-- DB接続を Service Role Key で持つので、サーバーサイドで完結させたい
+## アーキテクチャ判断
 
-## ドメインモデル
+### なぜ地図はフロントから直接 Google Maps を叩くのか
 
-前回のSQLite版と同一。エンティティは:
-- **Member**: 組合員（小売・卸・農家・製造）
-- **Driver**: ドライバー（車両容量・冷蔵対応有無）
-- **DeliveryRequest**: 配送依頼
-- **Route**: 確定済みの1便分の運行
-- **RouteStop**: ルート上のストップ
-- **CostShare**: 重量按分による組合員別の運行費負担
+地図描画・経路計算はクライアント側の Maps JavaScript API で完結する。
+API（Render）を経由させると無駄なレイテンシとサーバー負荷が増えるだけなので、
+フロントから直接利用する。APIキーは `NEXT_PUBLIC_` 環境変数として公開されるが、
+Google Cloud 側でリファラー制限をかけることで不正利用を防ぐ。
 
-PostgreSQLへの移行で変えた点:
-- `INTEGER` → `BIGSERIAL` / `BIGINT` (Postgres流)
-- `TEXT DEFAULT (datetime('now'))` → `TIMESTAMPTZ DEFAULT NOW()`
-- `BOOLEAN` 型を `INTEGER 0/1` の代わりに使用
-- 外部キー名を Supabase が自動推論できるよう明示的な命名規則に従う
+### なぜ位置情報を「30秒ポーリング」にしたか
 
-## マッチングアルゴリズム
+要件が「数十秒粒度で十分」だったため、最もシンプルな構成を選んだ:
 
-`api/matching.js` に純粋関数として実装。DBやSupabaseに依存しないため、ユニットテストもしやすく、将来 Vercel Edge Functions に移したくなったときも転用可能です。
+- ドライバー画面: `watchPosition` で現在地を監視し、30秒間隔で `POST /api/positions`
+- 組合員画面: 30秒間隔で `GET /api/positions/latest` をポーリング
 
-### 入力
-- 対象日の `pending` 依頼
-- パラメータ: クラスタ半径(km)・車両容量(kg)・冷蔵要件
+WebSocket や Supabase Realtime を使えば秒単位の追跡も可能だが、
+- 実装・運用が複雑になる
+- Render Free / Supabase Free の接続数制限に当たりやすい
+- 配送業務で秒単位の精度は実際には不要
 
-### 手順
-1. 冷蔵要件でフィルタ
-2. 各依頼を seed としてグループ生成（容量を超えない範囲で半径内の依頼を吸収）
-3. グループ内で「全 pickup → 全 delivery」を最近傍法で順序付け
-4. Haversine距離で総距離を概算
-5. 重量比例で運行費を按分（既定 80円/km）
+という理由で見送った。将来必要になれば `vehicle_positions` テーブルはそのまま使え、
+購読層だけ Realtime に差し替えられる。
 
-### 既知の限界
-- 時間窓を制約として使っていない
-- 複数車両の同時最適化はできない
-- 直線距離ベース（実走行距離ではない）
+### なぜ完了写真を Supabase Storage にしたか
 
-これらは順次 OSRM API 連携や OR-Tools ベースのソルバに置き換えていく前提です。
+すでに Supabase を使っているので、画像のためだけに Cloudinary 等の
+別サービスを足すのは管理対象を増やすだけ。Storage の Public バケットに置けば
+`photo_url` を `route_stops` に持たせるだけで一覧表示も簡単。
+無料枠は 1GB。1枚 500KB として約2000枚。数ヶ月の運用には十分で、
+逼迫したら有料プラン（8GB〜）か古い写真の定期削除で対応する。
 
-## データフロー (マッチング → ルート確定)
+## データモデル
 
 ```
-[ユーザー]
-  ↓ POST /api/match/suggest { date, max_radius_km, capacity_kg }
-[Render API]
-  ↓ Supabase: SELECT pending requests for date
-[Supabase]
-  ↓ 配送依頼一覧
-[Render API: matching.js]
-  - clusterRequests
-  - buildStopSequence
-  - estimateDistance
-  - calcCostShares
-  ↓ proposals[]
-[ユーザー: 提案を確認しドライバー選択]
-  ↓ POST /api/routes
-[Render API]
-  - routes に INSERT
-  - route_stops に INSERT
-  - cost_shares に INSERT
-  - delivery_requests を status='matched' に UPDATE
-[Supabase] (上記4つ; Postgres トランザクションで実行可能だが現状は逐次)
+members        組合員（小売・卸・農家・製造）。座標を持つ
+vehicles       車両。積載量・冷蔵対応
+drivers        ドライバー。pin_code でログイン
+routes         1日分の配送計画。driver_id / vehicle_id / scheduled_date / status
+route_stops    経由地。stop_order 順。pickup/delivery、座標、
+               completed / completed_at / arrived_at / notes / photo_url
+vehicle_positions  車両位置ログ（追記型）。route_id ごとに時系列で蓄積
 ```
 
-> **注**: 現状はSupabase JS Clientの仕様上、複数テーブルにまたがるトランザクションを単一APIで実現できないため、エラー発生時の整合性回復は呼び出し元での再試行に依存しています。本番運用前に Supabase の `rpc()` (Postgres関数) を使ったトランザクション化を推奨。
+ビュー `vehicle_latest_positions` が `route_id` ごとの最新1件を返し、
+組合員マップのポーリングを軽量にしている（`DISTINCT ON`）。
+
+### ルートのステータス遷移
+
+```
+planned ──(最初の経由地が完了)──> in_progress ──(全経由地完了)──> completed
+   └──────────────── cancelled ────────────────┘
+```
+
+ドライバーが経由地を完了するたびに API 側で残数を数え、
+0 になれば `routes.status = completed` かつ `end_time` を記録する。
+
+## 主要画面の設計
+
+### 配送マップ `/map`（組合員）
+
+- 日付セレクタ → その日の `routes` を取得
+- ルート未選択時: 全車両の現在地マーカーを地図に表示（30秒更新）
+- ルート選択時: そのルートの経由地マーカー＋経路線＋（あれば）車両現在地
+- 一覧と地図は連動。一覧クリックで地図がそのルートにフォーカス
+
+### ルート登録・編集 `/admin/routes/*`
+
+- `RouteForm` コンポーネントを新規・編集で共用
+- 経由地エディタ: 組合員を選ぶと住所・座標を自動補完。手入力も可
+- 順序は ▲▼ で入れ替え。追加・削除可
+- 入力中の経由地を地図にライブプレビュー
+- 保存時、座標付きの経由地が2件未満ならバリデーションエラー
+
+### ドライバー画面 `/driver`
+
+- 4桁 PIN でログイン（`drivers.pin_code`）。PIN は localStorage に保持し
+  以降のドライバー専用 API リクエストの `X-Driver-Pin` ヘッダーに付与
+- 「GPS送信を開始」で `watchPosition` + 30秒間隔の送信を開始
+- 経由地カードは上から順に。現在の経由地だけ「完了」ボタンが有効
+  （順番に処理させることで記録漏れを防ぐ）
+- 完了時: メモ（任意）＋写真（任意・カメラ起動）を `multipart/form-data` で送信。
+  サーバーが Storage にアップロードし `photo_url` と `completed_at` を記録
 
 ## セキュリティ
 
-### 現在の構成
-- API は Render の環境変数に Service Role Key を保持し、フロントエンドにはこの鍵を渡さない
-- フロントエンド (Vercel) は HTTPS で API (Render) を呼び出す
-- Supabase 側は Row Level Security 有効化済み・`service_role` のみ全権限
+### 現状（簡易版）
 
-### 本番化の追加要件
-1. **認証**: Supabase Auth でログイン → API側で JWT 検証 → ユーザーIDを `members.auth_user_id` と紐付け
-2. **RLS強化**: ユーザーは自社の依頼のみ閲覧・編集可、ドライバーは自分のルートのみ閲覧
-3. **CORS厳格化**: `CORS_ORIGIN` を本番URLのみ許可
-4. **監査ログ**: ルート確定・キャンセルの操作履歴を別テーブルに記録
-5. **シークレット管理**: Render/Vercel の Environment Variables を Vault系ツールに移すことも検討
+- 組合員画面・管理画面: 環境変数の固定パスワード（`X-Viewer-Password` ヘッダー）
+- ドライバー画面: ドライバーごとの4桁 PIN（`X-Driver-Pin` ヘッダー）
+- service_role Key は Render の環境変数のみ。フロントには出ない
+- Google Maps キーはリファラー制限で保護
+
+### 簡易版の弱点と本番化への道
+
+| 弱点 | 本番での対応 |
+|------|------------|
+| パスワードが全組合員で共通 | Supabase Auth でメール認証、組合員ごとアカウント |
+| PIN 4桁は総当たり可能 | ログイン試行回数制限、PIN を長く、または Auth 化 |
+| `/api/positions` `/api/stops/*/complete` が無認証 | `X-Driver-Pin` 必須化、または Auth トークン検証 |
+| 写真バケットが Public（URL を知れば誰でも閲覧） | 署名付きURL（期限付き）に切替 |
+| 複数テーブル更新が非トランザクション | Postgres 関数（`rpc`）でトランザクション化 |
+
+## 既知の技術的負債
+
+1. **ルート更新時の経由地全置換**
+   PUT `/api/routes/:id` は経由地を一度全削除して入れ直す。
+   フォーム側が既存の完了状態（`completed` / `photo_url` 等）を保持して
+   送り返すことで実害は抑えているが、ドライバーが配送中のルートを管理者が
+   編集すると競合の可能性がある。本来は `stop_order` ベースの差分更新にすべき。
+
+2. **位置ログの肥大化**
+   `vehicle_positions` は追記型。30秒ごと×稼働時間×車両数で増え続ける。
+   定期的な古いログの削除（例: 30日より前を削除）バッチが必要。
+
+3. **Directions API のクォータ**
+   ルート選択のたびに Directions API を呼ぶ。組合員が頻繁に切り替えると
+   クォータを消費する。結果のキャッシュ（同一ルートは再計算しない）を
+   入れると良い。
 
 ## 拡張ロードマップ
 
-### Phase 1 (現在 — PoC)
-- 基本的な依頼登録・マッチング・ルート管理・ドライバー画面
+### Phase 1（現在）
+地図表示・ルートCRUD・位置トラッキング・配達記録・完了写真
 
 ### Phase 2
-- Supabase Auth による認証 / 組合員ごとのアクセス制御
-- 時間窓制約の厳密化
-- ルートをドラッグ＆ドロップで微調整できるUI
-- OSRM (オープンソース経路エンジン) で実走行距離・時間に切替
+- Supabase Auth による正式認証（組合員・ドライバーアカウント）
+- 位置ログの自動クリーンアップ
+- Directions 結果のキャッシュ
+- ルート編集の差分更新化
 
 ### Phase 3
-- LINE/SMS 通知（依頼登録・ルート確定・ドライバー出発）
-- ドライバー画面の PWA化（オフラインでも閲覧可能）
-- 月次清算CSV出力（組合員間の振替伝票自動生成）
-- POS連携で在庫から自動発注 → 自動配送依頼
+- 配達予定時刻と実績の比較ダッシュボード（遅延の可視化）
+- LINE / SMS 通知（出発・到着間近・完了）
+- ドライバー画面の PWA 化（オフラインでも経由地リスト閲覧）
+- 完了写真の署名付きURL化
 
 ### Phase 4
-- 機械学習による需要予測（曜日・季節・天候）
-- 多目的最適化（コスト・CO2・労働時間のトレードオフ）
-- 周辺の協同組合と相互乗り入れ（マルチテナント化）
+- 過去の位置ログからの所要時間予測
+- 初期版にあったマッチング機能の再統合（依頼 → 自動ルート生成）
+- 周辺組合との相互乗り入れ（マルチテナント化）
 
 ## 運用コスト試算
 
-無料枠で稼働可能ですが、本格運用時の目安:
-
 | サービス | 無料枠 | 有料移行目安 |
 |----------|--------|--------------|
-| Vercel | Hobby (個人/非商用) | Pro $20/月 (商用利用時必須) |
-| Render | Free (15分でスリープ) | Starter $7/月 (常時稼働) |
-| Supabase | Free (DB 500MB / 帯域 5GB) | Pro $25/月 (DB 8GB / バックアップ7日) |
+| Vercel | Hobby（個人・非商用） | Pro $20/月（商用時） |
+| Render | Free（15分でスリープ） | Starter $7/月（常時稼働） |
+| Supabase | Free（DB 500MB / Storage 1GB） | Pro $25/月 |
+| Google Maps | 月 $200 相当の無料枠 | 超過分は従量課金 |
 
-**月コスト想定: $0〜$52** (規模・要件次第)
-
-## 障害対応
-
-### Renderがスリープする問題 (Free Plan)
-
-15分アクセスがないと Render Free はスリープし、コールドスタートに 20〜30秒かかります。対策:
-
-- **Starter プランへ昇格** ($7/月): 常時稼働
-- **外部からのヘルスチェック** (UptimeRobot など): 5分おきに `/api/health` を叩く
-
-### Supabase の Realtime 機能を使うか
-
-ドライバーがストップを完了したとき、管理者画面に即座に反映したい場合は Supabase Realtime を活用できます。Phase 2 以降で検討。
+小規模なら月 **$0〜$52** + Maps 従量。
+Maps は通常無料枠内だが、予算アラートの設定を推奨。

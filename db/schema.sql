@@ -1,6 +1,6 @@
 -- ============================================================
--- 組合員間共同配送マッチングシステム — Supabaseスキーマ
--- 実行: Supabaseダッシュボード → SQL Editor に貼り付けて Run
+-- 組合員間共同配送 — Supabaseスキーマ (地図中心版)
+-- 実行: Supabase ダッシュボード → SQL Editor で順に貼り付けて Run
 -- ============================================================
 
 -- ===== 組合員 =====
@@ -18,116 +18,126 @@ CREATE TABLE IF NOT EXISTS members (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ===== 車両 =====
+CREATE TABLE IF NOT EXISTS vehicles (
+  id BIGSERIAL PRIMARY KEY,
+  code TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  plate_number TEXT,
+  vehicle_type TEXT,
+  capacity_kg INTEGER DEFAULT 1000,
+  refrigerated BOOLEAN DEFAULT FALSE,
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- ===== ドライバー =====
 CREATE TABLE IF NOT EXISTS drivers (
   id BIGSERIAL PRIMARY KEY,
   member_id BIGINT REFERENCES members(id),
   name TEXT NOT NULL,
   phone TEXT,
-  vehicle_type TEXT,
-  vehicle_capacity_kg INTEGER DEFAULT 1000,
-  refrigerated BOOLEAN DEFAULT FALSE,
+  pin_code TEXT,             -- ドライバー画面ログイン用 (4桁数字想定)
   active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- ===== 配送ルート =====
+-- ===== ルート =====
+-- 1日分の配送計画。複数の経由地(stops)を含む
 CREATE TABLE IF NOT EXISTS routes (
   id BIGSERIAL PRIMARY KEY,
   route_code TEXT UNIQUE NOT NULL,
-  driver_id BIGINT REFERENCES drivers(id),
+  name TEXT NOT NULL,                      -- "午前便A" など
   scheduled_date DATE NOT NULL,
-  start_time TIMESTAMPTZ,
-  end_time TIMESTAMPTZ,
+  driver_id BIGINT REFERENCES drivers(id),
+  vehicle_id BIGINT REFERENCES vehicles(id),
+  start_time TIMESTAMPTZ,                  -- 実際の開始時刻
+  end_time TIMESTAMPTZ,                    -- 実際の終了時刻
+  planned_start_time TIME,                 -- 計画開始時刻
   status TEXT NOT NULL DEFAULT 'planned'
     CHECK (status IN ('planned','in_progress','completed','cancelled')),
-  total_weight_kg NUMERIC(10,2) DEFAULT 0,
-  total_distance_km NUMERIC(10,2),
   notes TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- ===== 配送依頼 =====
-CREATE TABLE IF NOT EXISTS delivery_requests (
-  id BIGSERIAL PRIMARY KEY,
-  request_code TEXT UNIQUE NOT NULL,
-  shipper_id BIGINT NOT NULL REFERENCES members(id),
-  receiver_id BIGINT NOT NULL REFERENCES members(id),
-  pickup_address TEXT NOT NULL,
-  pickup_lat DOUBLE PRECISION,
-  pickup_lng DOUBLE PRECISION,
-  delivery_address TEXT NOT NULL,
-  delivery_lat DOUBLE PRECISION,
-  delivery_lng DOUBLE PRECISION,
-  pickup_window_start TIMESTAMPTZ NOT NULL,
-  pickup_window_end TIMESTAMPTZ NOT NULL,
-  delivery_deadline TIMESTAMPTZ NOT NULL,
-  weight_kg NUMERIC(10,2) NOT NULL,
-  volume_m3 NUMERIC(10,2),
-  refrigerated BOOLEAN DEFAULT FALSE,
-  cargo_description TEXT,
-  status TEXT NOT NULL DEFAULT 'pending'
-    CHECK (status IN ('pending','matched','picked_up','delivered','cancelled')),
-  matched_route_id BIGINT REFERENCES routes(id),
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
+CREATE INDEX IF NOT EXISTS idx_routes_date ON routes(scheduled_date);
 
--- ===== ルート上のストップ =====
+-- ===== 経由地 (Route Stop) =====
 CREATE TABLE IF NOT EXISTS route_stops (
   id BIGSERIAL PRIMARY KEY,
   route_id BIGINT NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
   stop_order INTEGER NOT NULL,
   stop_type TEXT NOT NULL CHECK (stop_type IN ('pickup','delivery')),
-  request_id BIGINT NOT NULL REFERENCES delivery_requests(id),
-  member_id BIGINT NOT NULL REFERENCES members(id),
+  member_id BIGINT REFERENCES members(id),
   address TEXT NOT NULL,
-  lat DOUBLE PRECISION,
-  lng DOUBLE PRECISION,
-  scheduled_time TIMESTAMPTZ,
-  actual_time TIMESTAMPTZ,
+  lat DOUBLE PRECISION NOT NULL,
+  lng DOUBLE PRECISION NOT NULL,
+  cargo_description TEXT,
+  weight_kg NUMERIC(10,2),
+  refrigerated BOOLEAN DEFAULT FALSE,
+  scheduled_time TIME,
+  arrived_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
   completed BOOLEAN DEFAULT FALSE,
-  notes TEXT
-);
-
--- ===== コスト分担 =====
-CREATE TABLE IF NOT EXISTS cost_shares (
-  id BIGSERIAL PRIMARY KEY,
-  route_id BIGINT NOT NULL REFERENCES routes(id),
-  request_id BIGINT NOT NULL REFERENCES delivery_requests(id),
-  shipper_id BIGINT NOT NULL REFERENCES members(id),
-  weight_share NUMERIC(5,4),
-  distance_share_km NUMERIC(10,2),
-  amount_yen INTEGER,
+  notes TEXT,
+  photo_url TEXT,                         -- Supabase Storage の公開URL
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- ===== インデックス =====
-CREATE INDEX IF NOT EXISTS idx_requests_status ON delivery_requests(status);
-CREATE INDEX IF NOT EXISTS idx_requests_pickup_date ON delivery_requests(pickup_window_start);
-CREATE INDEX IF NOT EXISTS idx_routes_date ON routes(scheduled_date);
 CREATE INDEX IF NOT EXISTS idx_stops_route ON route_stops(route_id);
 
--- ============================================================
--- Row Level Security (RLS)
--- 初期は全許可。本番運用ではSupabase Authと組み合わせて制限する。
--- ============================================================
-ALTER TABLE members           ENABLE ROW LEVEL SECURITY;
-ALTER TABLE drivers           ENABLE ROW LEVEL SECURITY;
-ALTER TABLE delivery_requests ENABLE ROW LEVEL SECURITY;
-ALTER TABLE routes            ENABLE ROW LEVEL SECURITY;
-ALTER TABLE route_stops       ENABLE ROW LEVEL SECURITY;
-ALTER TABLE cost_shares       ENABLE ROW LEVEL SECURITY;
+-- ===== 車両位置ログ =====
+-- ドライバー画面が30秒ごとに送信する位置情報
+CREATE TABLE IF NOT EXISTS vehicle_positions (
+  id BIGSERIAL PRIMARY KEY,
+  route_id BIGINT REFERENCES routes(id) ON DELETE CASCADE,
+  vehicle_id BIGINT REFERENCES vehicles(id),
+  driver_id BIGINT REFERENCES drivers(id),
+  lat DOUBLE PRECISION NOT NULL,
+  lng DOUBLE PRECISION NOT NULL,
+  heading DOUBLE PRECISION,               -- 進行方向 0-359 (任意)
+  speed_kmh DOUBLE PRECISION,             -- 速度 (任意)
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
--- service_role（API側）は全権限
-CREATE POLICY "service_role full access" ON members
-  FOR ALL TO service_role USING (true) WITH CHECK (true);
-CREATE POLICY "service_role full access" ON drivers
-  FOR ALL TO service_role USING (true) WITH CHECK (true);
-CREATE POLICY "service_role full access" ON delivery_requests
-  FOR ALL TO service_role USING (true) WITH CHECK (true);
-CREATE POLICY "service_role full access" ON routes
-  FOR ALL TO service_role USING (true) WITH CHECK (true);
-CREATE POLICY "service_role full access" ON route_stops
-  FOR ALL TO service_role USING (true) WITH CHECK (true);
-CREATE POLICY "service_role full access" ON cost_shares
-  FOR ALL TO service_role USING (true) WITH CHECK (true);
+CREATE INDEX IF NOT EXISTS idx_positions_route ON vehicle_positions(route_id, recorded_at DESC);
+
+-- 最新位置だけを高速取得するビュー
+CREATE OR REPLACE VIEW vehicle_latest_positions AS
+SELECT DISTINCT ON (route_id)
+  route_id, vehicle_id, driver_id, lat, lng, heading, speed_kmh, recorded_at
+FROM vehicle_positions
+ORDER BY route_id, recorded_at DESC;
+
+-- ===== Storage バケット =====
+-- 完了写真用バケットを作成 (公開設定)
+INSERT INTO storage.buckets (id, name, public)
+  VALUES ('delivery-photos', 'delivery-photos', true)
+ON CONFLICT (id) DO NOTHING;
+
+-- バケットへのアップロードポリシー (service_role なら全許可)
+DO $$ BEGIN
+  CREATE POLICY "service_role can manage delivery-photos" ON storage.objects
+    FOR ALL TO service_role USING (true) WITH CHECK (true);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- 公開バケットなので誰でも読める (バケット作成時に public=true 済み)
+
+-- ============================================================
+-- Row Level Security
+-- ============================================================
+ALTER TABLE members            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vehicles           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE drivers            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE routes             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE route_stops        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_positions  ENABLE ROW LEVEL SECURITY;
+
+DO $$ BEGIN CREATE POLICY "service_role full" ON members           FOR ALL TO service_role USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "service_role full" ON vehicles          FOR ALL TO service_role USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "service_role full" ON drivers           FOR ALL TO service_role USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "service_role full" ON routes            FOR ALL TO service_role USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "service_role full" ON route_stops       FOR ALL TO service_role USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE POLICY "service_role full" ON vehicle_positions FOR ALL TO service_role USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
