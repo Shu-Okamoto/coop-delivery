@@ -33,6 +33,12 @@ declare namespace google {
       constructor(opts?: any);
       setDirections(result: any): void;
     }
+    class Geocoder {
+      geocode(
+        req: { address?: string; location?: { lat: number; lng: number } },
+        cb: (results: any[] | null, status: string) => void
+      ): void;
+    }
     const SymbolPath: {
       CIRCLE: number;
       FORWARD_CLOSED_ARROW: number;

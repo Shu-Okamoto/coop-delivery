@@ -54,3 +54,30 @@ export const STOP_COLORS = {
 // 山口県岩国市中心の初期座標
 export const DEFAULT_CENTER = { lat: 34.12, lng: 132.05 };
 export const DEFAULT_ZOOM = 11;
+
+/**
+ * 住所から緯度経度を取得する (Google Geocoding)。
+ * Maps JS API の Geocoder を使うので追加のAPIキー設定は不要。
+ * 見つからない場合は null を返す。
+ */
+export async function geocodeAddress(
+  address: string
+): Promise<{ lat: number; lng: number; formatted: string } | null> {
+  if (!address.trim()) return null;
+  const g = await loadGoogleMaps();
+  const geocoder = new g.maps.Geocoder();
+  return new Promise((resolve) => {
+    geocoder.geocode({ address }, (results, status) => {
+      if (status === 'OK' && results && results[0]) {
+        const r = results[0];
+        const loc = r.geometry.location;
+        // location は LatLng オブジェクト。lat()/lng() で数値を取り出す
+        const lat = typeof loc.lat === 'function' ? loc.lat() : loc.lat;
+        const lng = typeof loc.lng === 'function' ? loc.lng() : loc.lng;
+        resolve({ lat, lng, formatted: r.formatted_address || address });
+      } else {
+        resolve(null);
+      }
+    });
+  });
+}

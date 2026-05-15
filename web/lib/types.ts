@@ -1,12 +1,16 @@
+export type MemberType = 'store' | 'wholesaler' | 'farmer' | 'manufacturer';
+
 export type Member = {
   id: number;
   code: string;
   name: string;
-  type: 'store' | 'wholesaler' | 'farmer' | 'manufacturer';
+  type: MemberType;
   address: string;
   lat: number;
   lng: number;
+  contact_name?: string;
   phone?: string;
+  email?: string;
 };
 
 export type Vehicle = {
@@ -17,12 +21,16 @@ export type Vehicle = {
   vehicle_type?: string;
   capacity_kg: number;
   refrigerated: boolean;
+  active?: boolean;
 };
 
 export type Driver = {
   id: number;
+  member_id?: number | null;
   name: string;
   phone?: string;
+  active?: boolean;
+  // pin_code は一覧APIでは返らない。登録・編集時のみフォームで扱う
 };
 
 export type RouteStop = {

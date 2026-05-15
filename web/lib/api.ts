@@ -40,6 +40,19 @@ export async function apiGet<T = any>(path: string): Promise<T> {
   return res.json();
 }
 
+// レスポンスからエラーメッセージを取り出す共通処理。
+// サーバーが {"error":"..."} を返す場合はその文言を、そうでなければ生テキストを使う。
+async function extractError(res: Response, method: string, path: string): Promise<string> {
+  const text = await res.text();
+  try {
+    const json = JSON.parse(text);
+    if (json && json.error) return json.error;
+  } catch {
+    // JSONでなければ生テキストにフォールバック
+  }
+  return `${method} ${path} failed: ${res.status} ${text}`.trim();
+}
+
 export async function apiPost<T = any>(path: string, body: any): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
@@ -47,7 +60,7 @@ export async function apiPost<T = any>(path: string, body: any): Promise<T> {
     body: JSON.stringify(body),
   });
   if (res.status === 401) throw new Error('UNAUTHORIZED');
-  if (!res.ok) throw new Error(`POST ${path} failed: ${res.status} ${await res.text()}`);
+  if (!res.ok) throw new Error(await extractError(res, 'POST', path));
   return res.json();
 }
 
@@ -58,7 +71,7 @@ export async function apiPut<T = any>(path: string, body: any): Promise<T> {
     body: JSON.stringify(body),
   });
   if (res.status === 401) throw new Error('UNAUTHORIZED');
-  if (!res.ok) throw new Error(`PUT ${path} failed: ${res.status} ${await res.text()}`);
+  if (!res.ok) throw new Error(await extractError(res, 'PUT', path));
   return res.json();
 }
 
@@ -68,7 +81,7 @@ export async function apiDelete<T = any>(path: string): Promise<T> {
     headers: { ...authHeaders() },
   });
   if (res.status === 401) throw new Error('UNAUTHORIZED');
-  if (!res.ok) throw new Error(`DELETE ${path} failed: ${res.status}`);
+  if (!res.ok) throw new Error(await extractError(res, 'DELETE', path));
   return res.json();
 }
 

@@ -6,21 +6,24 @@ import PasswordGate from '@/components/PasswordGate';
 function AdminNav() {
   const path = usePathname();
   const tabs = [
-    { href: '/admin', label: 'ダッシュボード' },
-    { href: '/admin/routes', label: 'ルート管理' },
-    { href: '/admin/routes/new', label: '＋ 新規ルート' },
+    { href: '/admin', label: 'ダッシュボード', exact: true },
+    { href: '/admin/routes', label: 'ルート管理', exact: false },
+    { href: '/admin/routes/new', label: '＋ 新規ルート', exact: true },
+    { href: '/admin/masters', label: 'マスタ管理', exact: false },
   ];
   const logout = () => {
     localStorage.removeItem('coop_password');
     localStorage.removeItem('coop_role');
     location.href = '/';
   };
+  const isActive = (t: { href: string; exact: boolean }) =>
+    t.exact ? path === t.href : path === t.href || path.startsWith(t.href + '/');
   return (
     <header className="header">
       <h1>📋 共同配送 管理画面</h1>
       <nav className="nav">
         {tabs.map((t) => (
-          <Link key={t.href} href={t.href} className={path === t.href ? 'active' : ''}>
+          <Link key={t.href} href={t.href} className={isActive(t) ? 'active' : ''}>
             {t.label}
           </Link>
         ))}

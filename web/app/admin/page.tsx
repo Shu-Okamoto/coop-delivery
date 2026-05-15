@@ -35,11 +35,21 @@ export default function AdminDashboard() {
           <div className="stat-card"><div className="value">{stats.total_vehicles}</div><div className="label">車両</div></div>
         </div>
       )}
-      <div style={{ display: 'flex', gap: 12, marginTop: 24 }}>
+      <div style={{ display: 'flex', gap: 12, marginTop: 24, flexWrap: 'wrap' }}>
         <Link href="/admin/routes/new" className="btn">＋ 新規ルートを登録</Link>
         <Link href="/admin/routes" className="btn secondary">ルート一覧</Link>
+        <Link href="/admin/masters" className="btn secondary">マスタ管理</Link>
         <Link href="/map" className="btn secondary">配送マップを見る</Link>
       </div>
+      {stats && stats.total_members === 0 && (
+        <div className="card" style={{ marginTop: 16, borderLeft: '4px solid #e67e22' }}>
+          <strong>はじめに</strong>
+          <p style={{ fontSize: 14, margin: '8px 0 0' }}>
+            組合員・車両・ドライバーがまだ登録されていません。
+            「マスタ管理」から登録するとルートが作れるようになります。
+          </p>
+        </div>
+      )}
     </>
   );
 }

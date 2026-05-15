@@ -159,22 +159,201 @@ app.get('/api/driver/routes/:id', requireDriver, wrap(async (req, res) => {
 app.get('/api/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
 // ===== マスタ系 =====
+// GET は誰でも可 (ルート登録フォーム等で使うため)。
+// 一覧は ?all=1 で非アクティブも含む (管理画面用)。
+// POST/PUT/DELETE は requireAdmin。
+
+// --- 組合員 (members) ---
 app.get('/api/members', wrap(async (req, res) => {
   const { data, error } = await supabase.from('members').select('*').order('id');
   if (error) throw error;
   res.json(data);
 }));
 
-app.get('/api/vehicles', wrap(async (req, res) => {
-  const { data, error } = await supabase.from('vehicles').select('*').eq('active', true).order('id');
+app.post('/api/members', requireAdmin, wrap(async (req, res) => {
+  const b = req.body;
+  if (!b.code || !b.name || !b.type) {
+    return res.status(400).json({ error: 'code, name, type は必須です' });
+  }
+  const { data, error } = await supabase.from('members').insert({
+    code: b.code,
+    name: b.name,
+    type: b.type,
+    address: b.address || null,
+    lat: b.lat ?? null,
+    lng: b.lng ?? null,
+    contact_name: b.contact_name || null,
+    phone: b.phone || null,
+    email: b.email || null,
+  }).select().single();
   if (error) throw error;
   res.json(data);
 }));
 
-app.get('/api/drivers', wrap(async (req, res) => {
-  const { data, error } = await supabase.from('drivers').select('id,name,phone,active').eq('active', true).order('id');
+app.put('/api/members/:id', requireAdmin, wrap(async (req, res) => {
+  const b = req.body;
+  const { data, error } = await supabase.from('members').update({
+    code: b.code,
+    name: b.name,
+    type: b.type,
+    address: b.address || null,
+    lat: b.lat ?? null,
+    lng: b.lng ?? null,
+    contact_name: b.contact_name || null,
+    phone: b.phone || null,
+    email: b.email || null,
+  }).eq('id', req.params.id).select().single();
   if (error) throw error;
   res.json(data);
+}));
+
+app.delete('/api/members/:id', requireAdmin, wrap(async (req, res) => {
+  // 経由地から参照されている場合は削除を拒否 (整合性保護)
+  const { count } = await supabase
+    .from('route_stops').select('id', { count: 'exact', head: true })
+    .eq('member_id', req.params.id);
+  if (count && count > 0) {
+    return res.status(409).json({
+      error: `この組合員はルートの経由地${count}件で使用中のため削除できません`,
+    });
+  }
+  const { error } = await supabase.from('members').delete().eq('id', req.params.id);
+  if (error) throw error;
+  res.json({ ok: true });
+}));
+
+// --- 車両 (vehicles) ---
+app.get('/api/vehicles', wrap(async (req, res) => {
+  let q = supabase.from('vehicles').select('*').order('id');
+  if (!req.query.all) q = q.eq('active', true);
+  const { data, error } = await q;
+  if (error) throw error;
+  res.json(data);
+}));
+
+app.post('/api/vehicles', requireAdmin, wrap(async (req, res) => {
+  const b = req.body;
+  if (!b.code || !b.name) {
+    return res.status(400).json({ error: 'code, name は必須です' });
+  }
+  const { data, error } = await supabase.from('vehicles').insert({
+    code: b.code,
+    name: b.name,
+    plate_number: b.plate_number || null,
+    vehicle_type: b.vehicle_type || null,
+    capacity_kg: b.capacity_kg ?? 1000,
+    refrigerated: !!b.refrigerated,
+    active: b.active === undefined ? true : !!b.active,
+  }).select().single();
+  if (error) throw error;
+  res.json(data);
+}));
+
+app.put('/api/vehicles/:id', requireAdmin, wrap(async (req, res) => {
+  const b = req.body;
+  const { data, error } = await supabase.from('vehicles').update({
+    code: b.code,
+    name: b.name,
+    plate_number: b.plate_number || null,
+    vehicle_type: b.vehicle_type || null,
+    capacity_kg: b.capacity_kg ?? 1000,
+    refrigerated: !!b.refrigerated,
+    active: b.active === undefined ? true : !!b.active,
+  }).eq('id', req.params.id).select().single();
+  if (error) throw error;
+  res.json(data);
+}));
+
+app.delete('/api/vehicles/:id', requireAdmin, wrap(async (req, res) => {
+  // ルートから参照されている場合は論理削除 (active=false)、それ以外は物理削除
+  const { count } = await supabase
+    .from('routes').select('id', { count: 'exact', head: true })
+    .eq('vehicle_id', req.params.id);
+  if (count && count > 0) {
+    const { error } = await supabase.from('vehicles')
+      .update({ active: false }).eq('id', req.params.id);
+    if (error) throw error;
+    return res.json({ ok: true, soft_deleted: true });
+  }
+  const { error } = await supabase.from('vehicles').delete().eq('id', req.params.id);
+  if (error) throw error;
+  res.json({ ok: true });
+}));
+
+// --- ドライバー (drivers) ---
+app.get('/api/drivers', wrap(async (req, res) => {
+  // 一覧では pin_code は返さない (セキュリティ)。?all=1 で非アクティブも含む
+  let q = supabase.from('drivers').select('id,member_id,name,phone,active').order('id');
+  if (!req.query.all) q = q.eq('active', true);
+  const { data, error } = await q;
+  if (error) throw error;
+  res.json(data);
+}));
+
+app.post('/api/drivers', requireAdmin, wrap(async (req, res) => {
+  const b = req.body;
+  if (!b.name || !b.pin_code) {
+    return res.status(400).json({ error: 'name, pin_code は必須です' });
+  }
+  if (!/^\d{4,6}$/.test(String(b.pin_code))) {
+    return res.status(400).json({ error: 'PINは4〜6桁の数字で入力してください' });
+  }
+  // PIN 重複チェック
+  const { data: dup } = await supabase
+    .from('drivers').select('id').eq('pin_code', String(b.pin_code)).maybeSingle();
+  if (dup) return res.status(409).json({ error: 'このPINは既に使われています' });
+
+  const { data, error } = await supabase.from('drivers').insert({
+    member_id: b.member_id || null,
+    name: b.name,
+    phone: b.phone || null,
+    pin_code: String(b.pin_code),
+    active: b.active === undefined ? true : !!b.active,
+  }).select('id,member_id,name,phone,active').single();
+  if (error) throw error;
+  res.json(data);
+}));
+
+app.put('/api/drivers/:id', requireAdmin, wrap(async (req, res) => {
+  const b = req.body;
+  const update = {
+    member_id: b.member_id || null,
+    name: b.name,
+    phone: b.phone || null,
+    active: b.active === undefined ? true : !!b.active,
+  };
+  // pin_code は送られてきた時だけ更新 (空なら据え置き)
+  if (b.pin_code) {
+    if (!/^\d{4,6}$/.test(String(b.pin_code))) {
+      return res.status(400).json({ error: 'PINは4〜6桁の数字で入力してください' });
+    }
+    const { data: dup } = await supabase
+      .from('drivers').select('id').eq('pin_code', String(b.pin_code))
+      .neq('id', req.params.id).maybeSingle();
+    if (dup) return res.status(409).json({ error: 'このPINは既に使われています' });
+    update.pin_code = String(b.pin_code);
+  }
+  const { data, error } = await supabase.from('drivers')
+    .update(update).eq('id', req.params.id)
+    .select('id,member_id,name,phone,active').single();
+  if (error) throw error;
+  res.json(data);
+}));
+
+app.delete('/api/drivers/:id', requireAdmin, wrap(async (req, res) => {
+  // ルートに割当済みなら論理削除
+  const { count } = await supabase
+    .from('routes').select('id', { count: 'exact', head: true })
+    .eq('driver_id', req.params.id);
+  if (count && count > 0) {
+    const { error } = await supabase.from('drivers')
+      .update({ active: false }).eq('id', req.params.id);
+    if (error) throw error;
+    return res.json({ ok: true, soft_deleted: true });
+  }
+  const { error } = await supabase.from('drivers').delete().eq('id', req.params.id);
+  if (error) throw error;
+  res.json({ ok: true });
 }));
 
 // ===== ルート CRUD =====
