@@ -12,7 +12,7 @@ type Props = {
 
 const emptyStop = (order: number): RouteStop => ({
   stop_order: order,
-  stop_type: 'pickup',
+  stop_type: 'delivery',
   member_id: null,
   address: '',
   lat: 0,
@@ -211,7 +211,7 @@ export default function RouteForm({ existing }: Props) {
                 <option value={0}>組合員を選択...</option>
                 {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
               </select>
-              <input type="number" placeholder="kg" value={s.weight_kg ?? ''}
+              <input type="number" step="0.1" placeholder="kg" value={s.weight_kg ?? ''}
                      onChange={(e) => updateStop(i, { weight_kg: e.target.value ? +e.target.value : undefined })} />
               <input type="time" value={s.scheduled_time || ''}
                      onChange={(e) => updateStop(i, { scheduled_time: e.target.value })} />
