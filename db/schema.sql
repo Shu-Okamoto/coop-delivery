@@ -104,7 +104,10 @@ CREATE TABLE IF NOT EXISTS vehicle_positions (
 CREATE INDEX IF NOT EXISTS idx_positions_route ON vehicle_positions(route_id, recorded_at DESC);
 
 -- 最新位置だけを高速取得するビュー
-CREATE OR REPLACE VIEW vehicle_latest_positions AS
+-- security_invoker=true: クエリ実行ユーザーのRLSポリシーを適用させる
+CREATE OR REPLACE VIEW vehicle_latest_positions
+  WITH (security_invoker = true)
+AS
 SELECT DISTINCT ON (route_id)
   route_id, vehicle_id, driver_id, lat, lng, heading, speed_kmh, recorded_at
 FROM vehicle_positions
