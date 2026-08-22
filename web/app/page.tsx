@@ -30,6 +30,13 @@ export default function Home() {
               予定ルート確認・配達記録・完了写真
             </div>
           </Link>
+          <Link href="/member" className="stat-card">
+            <div className="value">🥬</div>
+            <div className="label">組合員ログイン</div>
+            <div style={{ marginTop: 8, fontSize: 13 }}>
+              マイページ・集荷依頼（準備中）
+            </div>
+          </Link>
         </div>
       </div>
     </>

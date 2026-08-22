@@ -11,6 +11,8 @@ export type Member = {
   contact_name?: string;
   phone?: string;
   email?: string;
+  login_id?: string | null;
+  has_login?: boolean;
 };
 
 export type Vehicle = {

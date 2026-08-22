@@ -24,6 +24,7 @@ if (typeof globalThis.WebSocket === 'undefined') {
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
+const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 
 const PORT = process.env.PORT || 10000;
@@ -64,6 +65,63 @@ const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((e) => {
   console.error(e);
   res.status(500).json({ error: e.message });
 });
+
+// ===== 組合員ログイン用のパスワードハッシュ / トークン（Node標準cryptoのみ） =====
+// トークン署名鍵。未設定ならサービスキーから派生（環境間で一貫させるため固定文字列を推奨）
+const SESSION_SECRET = process.env.SESSION_SECRET
+  || crypto.createHash('sha256').update('coop-member-' + SUPABASE_SERVICE_KEY).digest('hex');
+const MEMBER_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30日
+
+// scrypt でパスワードをハッシュ化。保存形式は "salt:hash"（ともにhex）
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+function verifyPassword(password, stored) {
+  if (!stored || !stored.includes(':')) return false;
+  const [salt, hash] = stored.split(':');
+  const candidate = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  const a = Buffer.from(hash, 'hex');
+  const b = Buffer.from(candidate, 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// HMAC 署名付きトークン: base64url(payload).hmac
+function signMemberToken(memberId) {
+  const payload = Buffer.from(JSON.stringify({ m: memberId, exp: Date.now() + MEMBER_TOKEN_TTL_MS }))
+    .toString('base64url');
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
+}
+function verifyMemberToken(token) {
+  if (!token || !token.includes('.')) return null;
+  const [payload, sig] = token.split('.');
+  const expected = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
+    if (!data.exp || data.exp < Date.now()) return null;
+    return data.m;
+  } catch {
+    return null;
+  }
+}
+
+// 組合員認証ミドルウェア (X-Member-Token ヘッダーで判定)
+async function requireMember(req, res, next) {
+  const token = req.header('X-Member-Token') || '';
+  const memberId = verifyMemberToken(token);
+  if (!memberId) return res.status(401).json({ error: 'ログインが必要です' });
+  const { data, error } = await supabase
+    .from('members').select('id,code,name,type,address,lat,lng,contact_name,phone,email')
+    .eq('id', memberId).single();
+  if (error || !data) return res.status(401).json({ error: 'ログインが無効です' });
+  req.member = data;
+  next();
+}
 
 // ===== 認証 (簡易パスワード) =====
 // X-Viewer-Password ヘッダーで viewer/driver/admin を判定
@@ -167,7 +225,63 @@ app.get('/api/health', (req, res) => res.json({ ok: true, time: new Date().toISO
 app.get('/api/members', wrap(async (req, res) => {
   const { data, error } = await supabase.from('members').select('*').order('id');
   if (error) throw error;
-  res.json(data);
+  // password_hash / login_id は公開しない。ログイン設定済みかだけ has_login で伝える。
+  res.json((data || []).map(({ password_hash, login_id, ...m }) => ({
+    ...m,
+    has_login: !!login_id,
+  })));
+}));
+
+// --- 組合員ログイン ---
+// ログインID + パスワードで認証し、以降の依頼系APIで使うトークンを返す
+app.post('/api/auth/member', wrap(async (req, res) => {
+  const { login_id, password } = req.body || {};
+  if (!login_id || !password) {
+    return res.status(400).json({ error: 'ログインIDとパスワードを入力してください' });
+  }
+  const { data, error } = await supabase
+    .from('members').select('id,code,name,type,password_hash')
+    .eq('login_id', login_id).maybeSingle();
+  if (error) throw error;
+  if (!data || !data.password_hash || !verifyPassword(password, data.password_hash)) {
+    return res.status(401).json({ error: 'ログインIDまたはパスワードが違います' });
+  }
+  res.json({
+    ok: true,
+    token: signMemberToken(data.id),
+    member: { id: data.id, code: data.code, name: data.name, type: data.type },
+  });
+}));
+
+// 組合員: 自分のプロフィール
+app.get('/api/member/me', requireMember, wrap(async (req, res) => {
+  res.json(req.member);
+}));
+
+// 管理者: 組合員のログイン情報を設定/変更（login_id と任意でパスワード）
+app.put('/api/members/:id/credentials', requireAdmin, wrap(async (req, res) => {
+  const { login_id, password } = req.body || {};
+  const update = {};
+  if (login_id !== undefined) update.login_id = login_id ? String(login_id).trim() : null;
+  if (password) {
+    if (String(password).length < 4) {
+      return res.status(400).json({ error: 'パスワードは4文字以上にしてください' });
+    }
+    update.password_hash = hashPassword(password);
+  }
+  if (Object.keys(update).length === 0) {
+    return res.status(400).json({ error: 'login_id または password を指定してください' });
+  }
+  // login_id 重複チェック
+  if (update.login_id) {
+    const { data: dup } = await supabase
+      .from('members').select('id').eq('login_id', update.login_id)
+      .neq('id', req.params.id).maybeSingle();
+    if (dup) return res.status(409).json({ error: 'このログインIDは既に使われています' });
+  }
+  const { error } = await supabase.from('members').update(update).eq('id', req.params.id);
+  if (error) throw error;
+  res.json({ ok: true });
 }));
 
 app.post('/api/members', requireAdmin, wrap(async (req, res) => {
