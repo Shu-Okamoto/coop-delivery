@@ -112,10 +112,12 @@ export default function MemberPage() {
         </div>
 
         <div className="card">
-          <h3 style={{ marginTop: 0 }}>集荷依頼</h3>
-          <p style={{ fontSize: 13, color: '#7a8a99' }}>
-            集荷募集中の予定への依頼機能は準備中です（次のアップデートで有効になります）。
-          </p>
+          <h3 style={{ marginTop: 0 }}>メニュー</h3>
+          <div style={{ display: 'grid', gap: 8 }}>
+            <Link className="btn" href="/member/recruiting">🔎 集荷募集中の予定を見る・依頼する</Link>
+            <Link className="btn secondary" href="/member/schedules">🗂 自分の予定（下書き・募集・承認）</Link>
+            <Link className="btn secondary" href="/member/requests">📨 自分が出した集荷依頼</Link>
+          </div>
         </div>
 
         <div style={{ textAlign: 'center', marginTop: 12 }}>

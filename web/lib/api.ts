@@ -184,6 +184,8 @@ export async function memberPost<T = any>(path: string, body: any): Promise<T> {
 
 export const statusLabel = (s: string) =>
   ({
+    draft: '下書き',
+    recruiting: '集荷募集中',
     planned: '計画済',
     in_progress: '配送中',
     completed: '完了',
@@ -192,6 +194,8 @@ export const statusLabel = (s: string) =>
 
 export const statusColor = (s: string) =>
   ({
+    draft: '#95a5a6',
+    recruiting: '#8e44ad',
     planned: '#e67e22',
     in_progress: '#3498db',
     completed: '#27ae60',
