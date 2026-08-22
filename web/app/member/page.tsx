@@ -115,7 +115,7 @@ export default function MemberPage() {
           <h3 style={{ marginTop: 0 }}>メニュー</h3>
           <div style={{ display: 'grid', gap: 8 }}>
             <Link className="btn" href="/member/recruiting">🔎 集荷募集中の予定を見る・依頼する</Link>
-            <Link className="btn secondary" href="/member/schedules">🗂 自分の予定（下書き・募集・承認）</Link>
+            <Link className="btn secondary" href="/member/schedules">🗂 ルート作成・予定作成・依頼承認</Link>
             <Link className="btn secondary" href="/member/requests">📨 自分が出した集荷依頼</Link>
           </div>
         </div>

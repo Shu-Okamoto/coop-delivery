@@ -58,7 +58,7 @@ export default function NewDraftPage() {
 
   return (
     <div className="driver-body">
-      <header className="header"><h1>＋ ルート下書き作成</h1></header>
+      <header className="header"><h1>＋ ルート作成</h1></header>
       <main className="driver-main">
         <div style={{ marginBottom: 12 }}>
           <Link href="/member/schedules" style={{ color: '#7a8a99', fontSize: 13 }}>← 自分の予定に戻る</Link>
@@ -101,7 +101,7 @@ export default function NewDraftPage() {
         </div>
 
         <div style={{ display: 'flex', gap: 8, marginBottom: 40 }}>
-          <button className="btn" onClick={save} disabled={saving}>{saving ? '保存中...' : '下書きを保存'}</button>
+          <button className="btn" onClick={save} disabled={saving}>{saving ? '保存中...' : 'ルートを保存'}</button>
           <button className="btn secondary" onClick={() => router.push('/member/schedules')}>キャンセル</button>
         </div>
       </main>

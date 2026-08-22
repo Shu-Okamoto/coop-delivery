@@ -184,7 +184,7 @@ export async function memberPost<T = any>(path: string, body: any): Promise<T> {
 
 export const statusLabel = (s: string) =>
   ({
-    draft: '下書き',
+    draft: 'ルート（未予定）',
     recruiting: '集荷募集中',
     planned: '計画済',
     in_progress: '配送中',
