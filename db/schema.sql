@@ -48,14 +48,17 @@ CREATE TABLE IF NOT EXISTS routes (
   id BIGSERIAL PRIMARY KEY,
   route_code TEXT UNIQUE NOT NULL,
   name TEXT NOT NULL,                      -- "午前便A" など
-  scheduled_date DATE NOT NULL,
+  scheduled_date DATE,                     -- 下書き(draft)は日付なしを許可
   driver_id BIGINT REFERENCES drivers(id),
   vehicle_id BIGINT REFERENCES vehicles(id),
   start_time TIMESTAMPTZ,                  -- 実際の開始時刻
   end_time TIMESTAMPTZ,                    -- 実際の終了時刻
   planned_start_time TIME,                 -- 計画開始時刻
   status TEXT NOT NULL DEFAULT 'planned'
-    CHECK (status IN ('planned','in_progress','completed','cancelled')),
+    CHECK (status IN ('draft','recruiting','planned','in_progress','completed','cancelled')),
+  pickup_deadline TIMESTAMPTZ,             -- 集荷募集の締切(前日18時)
+  radius_km NUMERIC DEFAULT 10,            -- 集荷受付の半径(重心から)
+  created_by_member_id BIGINT REFERENCES members(id), -- 予定作成者(組合員)
   notes TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -87,6 +90,37 @@ CREATE TABLE IF NOT EXISTS route_stops (
 
 CREATE INDEX IF NOT EXISTS idx_stops_route ON route_stops(route_id);
 
+-- ===== 組合員ログイン (機能3) =====
+ALTER TABLE members
+  ADD COLUMN IF NOT EXISTS login_id      TEXT,
+  ADD COLUMN IF NOT EXISTS password_hash TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_members_login_id
+  ON members (login_id) WHERE login_id IS NOT NULL;
+
+-- ===== 集荷依頼 (機能1) =====
+CREATE TABLE IF NOT EXISTS pickup_requests (
+  id BIGSERIAL PRIMARY KEY,
+  route_id BIGINT NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+  requester_member_id BIGINT REFERENCES members(id),
+  pickup_address TEXT,
+  pickup_lat DOUBLE PRECISION,
+  pickup_lng DOUBLE PRECISION,
+  cargo_description TEXT,
+  ready_time TIME,
+  quantity NUMERIC,
+  weight_kg NUMERIC(10,2),
+  refrigerated BOOLEAN DEFAULT FALSE,
+  delivery_member_id BIGINT REFERENCES members(id),
+  delivery_address TEXT,
+  delivery_lat DOUBLE PRECISION,
+  delivery_lng DOUBLE PRECISION,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  note TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  decided_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_pickup_requests_route ON pickup_requests(route_id);
+
 -- ===== 車両位置ログ =====
 -- ドライバー画面が30秒ごとに送信する位置情報
 CREATE TABLE IF NOT EXISTS vehicle_positions (
@@ -104,7 +138,10 @@ CREATE TABLE IF NOT EXISTS vehicle_positions (
 CREATE INDEX IF NOT EXISTS idx_positions_route ON vehicle_positions(route_id, recorded_at DESC);
 
 -- 最新位置だけを高速取得するビュー
-CREATE OR REPLACE VIEW vehicle_latest_positions AS
+-- security_invoker=true: クエリ実行ユーザーのRLSポリシーを適用させる
+CREATE OR REPLACE VIEW vehicle_latest_positions
+  WITH (security_invoker = true)
+AS
 SELECT DISTINCT ON (route_id)
   route_id, vehicle_id, driver_id, lat, lng, heading, speed_kmh, recorded_at
 FROM vehicle_positions
@@ -134,7 +171,9 @@ ALTER TABLE drivers            ENABLE ROW LEVEL SECURITY;
 ALTER TABLE routes             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE route_stops        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_positions  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pickup_requests    ENABLE ROW LEVEL SECURITY;
 
+DO $$ BEGIN CREATE POLICY "service_role full" ON pickup_requests   FOR ALL TO service_role USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE POLICY "service_role full" ON members           FOR ALL TO service_role USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE POLICY "service_role full" ON vehicles          FOR ALL TO service_role USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE POLICY "service_role full" ON drivers           FOR ALL TO service_role USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;

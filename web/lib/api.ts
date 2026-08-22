@@ -127,8 +127,65 @@ export async function checkDriverPin(pin: string): Promise<{ id: number; name: s
   return data.driver;
 }
 
+// ===== 組合員ログイン =====
+type MemberSession = { id: number; code: string; name: string; type: string };
+
+function memberHeaders(): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  const token = localStorage.getItem('coop_member_token');
+  return token ? { 'X-Member-Token': token } : {};
+}
+
+export function getMemberSession(): MemberSession | null {
+  if (typeof window === 'undefined') return null;
+  const raw = localStorage.getItem('coop_member');
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+export async function memberLogin(loginId: string, password: string): Promise<MemberSession> {
+  const res = await fetch(`${BASE}/api/auth/member`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ login_id: loginId, password }),
+  });
+  if (!res.ok) throw new Error(await extractError(res, 'POST', '/api/auth/member'));
+  const data = await res.json();
+  if (typeof window !== 'undefined') {
+    localStorage.setItem('coop_member_token', data.token);
+    localStorage.setItem('coop_member', JSON.stringify(data.member));
+  }
+  return data.member;
+}
+
+export function memberLogout() {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem('coop_member_token');
+  localStorage.removeItem('coop_member');
+}
+
+export async function memberGet<T = any>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { cache: 'no-store', headers: { ...memberHeaders() } });
+  if (res.status === 401) throw new Error('UNAUTHORIZED');
+  if (!res.ok) throw new Error(await extractError(res, 'GET', path));
+  return res.json();
+}
+
+export async function memberPost<T = any>(path: string, body: any): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...memberHeaders() },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) throw new Error('UNAUTHORIZED');
+  if (!res.ok) throw new Error(await extractError(res, 'POST', path));
+  return res.json();
+}
+
 export const statusLabel = (s: string) =>
   ({
+    draft: 'ルート（未予定）',
+    recruiting: '集荷募集中',
     planned: '計画済',
     in_progress: '配送中',
     completed: '完了',
@@ -137,6 +194,8 @@ export const statusLabel = (s: string) =>
 
 export const statusColor = (s: string) =>
   ({
+    draft: '#95a5a6',
+    recruiting: '#8e44ad',
     planned: '#e67e22',
     in_progress: '#3498db',
     completed: '#27ae60',

@@ -151,6 +151,28 @@ export default function MembersManager() {
     }
   };
 
+  // ログインID・パスワードの設定/変更（機能3: 組合員ログイン）
+  const setCreds = async (m: Member) => {
+    const loginId = window.prompt(
+      `「${m.name}」のログインIDを入力してください`,
+      m.code || ''
+    );
+    if (loginId === null) return;
+    const password = window.prompt(
+      'パスワードを入力してください（4文字以上）。\n空欄のままにすると、ログインIDのみ更新します。'
+    );
+    if (password === null) return;
+    try {
+      const payload: any = { login_id: loginId.trim() };
+      if (password) payload.password = password;
+      await apiPut(`/api/members/${m.id}/credentials`, payload);
+      alert('ログイン情報を保存しました');
+      load();
+    } catch (e: any) {
+      alert('保存できません: ' + e.message);
+    }
+  };
+
   return (
     <div>
       <div className="toolbar">
@@ -236,7 +258,7 @@ export default function MembersManager() {
           <thead>
             <tr>
               <th>コード</th><th>名称</th><th>種別</th><th>住所</th>
-              <th>座標</th><th>連絡先</th><th></th>
+              <th>座標</th><th>連絡先</th><th>ログイン</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -254,8 +276,14 @@ export default function MembersManager() {
                 <td style={{ fontSize: 12 }}>
                   {m.contact_name || ''}{m.phone ? ` / ${m.phone}` : ''}
                 </td>
+                <td style={{ fontSize: 12 }}>
+                  {m.has_login
+                    ? <span style={{ color: '#27ae60' }}>✓ 設定済</span>
+                    : <span style={{ color: '#95a5a6' }}>未設定</span>}
+                </td>
                 <td style={{ whiteSpace: 'nowrap' }}>
                   <button className="btn small" onClick={() => openEdit(m)}>編集</button>{' '}
+                  <button className="btn secondary small" onClick={() => setCreds(m)}>ログイン設定</button>{' '}
                   <button className="btn danger small" onClick={() => del(m)}>削除</button>
                 </td>
               </tr>
