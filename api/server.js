@@ -493,6 +493,67 @@ app.delete('/api/routes/:id', requireAdmin, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// ===== 配送履歴 =====
+
+// 履歴一覧: 完了ルートを新しい順に。経由地件数・写真件数の集計付き。
+// ?from=YYYY-MM-DD & ?to=YYYY-MM-DD で期間絞り込み可。
+app.get('/api/history', requireViewer, wrap(async (req, res) => {
+  let q = supabase
+    .from('routes')
+    .select('*, drivers(name,phone), vehicles(name,plate_number), route_stops(id,stop_type,completed,photo_url,completed_at)')
+    .eq('status', 'completed')
+    .order('scheduled_date', { ascending: false })
+    .order('end_time', { ascending: false });
+  if (req.query.from) q = q.gte('scheduled_date', req.query.from);
+  if (req.query.to) q = q.lte('scheduled_date', req.query.to);
+  const { data, error } = await q;
+  if (error) throw error;
+
+  res.json((data || []).map(r => {
+    const stops = r.route_stops || [];
+    return {
+      id: r.id,
+      route_code: r.route_code,
+      name: r.name,
+      scheduled_date: r.scheduled_date,
+      start_time: r.start_time,
+      end_time: r.end_time,
+      status: r.status,
+      driver_name: r.drivers?.name,
+      driver_phone: r.drivers?.phone,
+      vehicle_name: r.vehicles?.name,
+      vehicle_plate: r.vehicles?.plate_number,
+      stops_total: stops.length,
+      stops_completed: stops.filter(s => s.completed).length,
+      photos_count: stops.filter(s => s.photo_url).length,
+    };
+  }));
+}));
+
+// 履歴詳細: 経由地(完了写真・完了時刻含む)。詳細表示は /api/routes/:id と同等だが
+// 履歴用に写真・時刻を扱いやすい形で返す。
+app.get('/api/history/:id', requireViewer, wrap(async (req, res) => {
+  const { data: route, error: e1 } = await supabase
+    .from('routes')
+    .select('*, drivers(name,phone), vehicles(name,plate_number,vehicle_type,capacity_kg,refrigerated)')
+    .eq('id', req.params.id).single();
+  if (e1 || !route) return res.status(404).json({ error: 'not found' });
+
+  const { data: stops, error: e2 } = await supabase
+    .from('route_stops').select('*, members(name)')
+    .eq('route_id', req.params.id).order('stop_order');
+  if (e2) throw e2;
+
+  res.json({
+    ...route,
+    driver_name: route.drivers?.name,
+    driver_phone: route.drivers?.phone,
+    vehicle_name: route.vehicles?.name,
+    vehicle_plate: route.vehicles?.plate_number,
+    stops: (stops || []).map(s => ({ ...s, member_name: s.members?.name })),
+  });
+}));
+
 // ===== 経由地 (個別更新・写真アップロード等) =====
 
 // ストップ完了 (写真任意)
