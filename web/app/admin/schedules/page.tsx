@@ -2,12 +2,12 @@
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { apiGet, apiPost, statusLabel, statusColor } from '@/lib/api';
+import type { Route } from '@/lib/types';
 
 type ScheduleRow = {
   id: number; route_code: string; name: string;
   scheduled_date: string | null; status: string;
   radius_km: number | null; pickup_deadline: string | null;
-  creator_name: string | null;
 };
 
 type Req = {
@@ -21,13 +21,12 @@ const reqLabel: Record<string, string> = { pending: '承認待ち', approved: '�
 const fmt = (t: string | null) => (t ? new Date(t).toLocaleString('ja-JP') : '—');
 
 export default function AdminSchedulesPage() {
-  const [drafts, setDrafts] = useState<ScheduleRow[]>([]);
+  const [routes, setRoutes] = useState<Route[]>([]);
   const [schedules, setSchedules] = useState<ScheduleRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [reqsById, setReqsById] = useState<Record<number, Req[]>>({});
   const [openId, setOpenId] = useState<number | null>(null);
 
-  // 予定作成フォーム
   const [planRouteId, setPlanRouteId] = useState(0);
   const [planDate, setPlanDate] = useState('');
   const [planRadius, setPlanRadius] = useState('10');
@@ -36,18 +35,21 @@ export default function AdminSchedulesPage() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [d, r] = await Promise.all([
-        apiGet<ScheduleRow[]>('/api/schedules?status=draft'),
+      const [all, recruiting] = await Promise.all([
+        apiGet<Route[]>('/api/routes'),
         apiGet<ScheduleRow[]>('/api/schedules?status=recruiting'),
       ]);
-      setDrafts(d);
-      setSchedules(r);
+      setRoutes(all);
+      setSchedules(recruiting);
     } catch (e: any) {
       setError(e.message);
     }
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // 予定作成の元にできるルート（既存ルート作成で作ったもの＝計画済 / 未予定）
+  const selectableRoutes = routes.filter((r) => r.status === 'planned' || r.status === 'draft');
 
   const createPlan = async () => {
     setPlanMsg(null); setError(null);
@@ -91,25 +93,28 @@ export default function AdminSchedulesPage() {
       <h2>予定作成</h2>
       {error && <div className="error-box">{error}</div>}
 
-      {/* 予定作成: ルートを選択・日付を選択 */}
       <div className="card">
         <h3 style={{ marginTop: 0 }}>予定を作成</h3>
         <p style={{ fontSize: 12, color: '#7a8a99' }}>
-          作成済みのルートを選び、配送日を決めると集荷募集が始まります（締切は前日18時）。
+          「＋ 新規ルート」で作成したルートを選び、配送日を決めると集荷募集が始まります（締切は前日18時）。
           ルートは消費されず、同じルートから何度でも予定を作成できます。
         </p>
-        {drafts.length === 0 ? (
+        {selectableRoutes.length === 0 ? (
           <p style={{ fontSize: 13, color: '#7a8a99' }}>
-            予定にできるルートがありません。先に
-            <Link href="/admin/schedules/new" style={{ margin: '0 4px' }}>ルート作成</Link>
-            を行ってください。
+            元にできるルートがありません。先に
+            <Link href="/admin/routes/new" style={{ margin: '0 4px' }}>＋ 新規ルート</Link>
+            で作成してください。
           </p>
         ) : (
           <div className="form-grid">
             <label>ルートを選択
               <select value={planRouteId} onChange={(e) => setPlanRouteId(+e.target.value)}>
                 <option value={0}>選択...</option>
-                {drafts.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                {selectableRoutes.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}{r.scheduled_date ? `（元: ${r.scheduled_date}）` : ''}
+                  </option>
+                ))}
               </select>
             </label>
             <label>配送日
@@ -122,29 +127,13 @@ export default function AdminSchedulesPage() {
           </div>
         )}
         {planMsg && <div style={{ marginTop: 8, color: '#1e7e46', fontSize: 13 }}>{planMsg}</div>}
-        <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
-          {drafts.length > 0 && <button className="btn" onClick={createPlan}>予定を作成</button>}
-          <Link href="/admin/schedules/new" className="btn secondary small">＋ ルート作成</Link>
-        </div>
+        {selectableRoutes.length > 0 && (
+          <button className="btn" style={{ marginTop: 10 }} onClick={createPlan}>予定を作成</button>
+        )}
       </div>
 
-      {/* ルート一覧 */}
-      <h3 style={{ margin: '20px 0 8px' }}>ルート一覧（再利用可）</h3>
-      {drafts.length === 0 && <p className="empty">ルートがありません</p>}
-      {drafts.map((r) => (
-        <div key={r.id} className="route-item">
-          <div className="info">
-            <div className="title">
-              {r.name}{' '}
-              <span className="badge" style={{ background: statusColor(r.status) }}>{statusLabel(r.status)}</span>
-            </div>
-            <div className="sub">{r.route_code} / 作成: {r.creator_name || '管理者'}</div>
-          </div>
-        </div>
-      ))}
-
-      {/* 予定一覧（集荷募集中） */}
-      <h3 style={{ margin: '20px 0 8px' }}>予定一覧（集荷募集中）</h3>
+      {/* 集荷募集中の予定（依頼の承認用） */}
+      <h3 style={{ margin: '20px 0 8px' }}>集荷募集中の予定</h3>
       {schedules.length === 0 && <p className="empty">集荷募集中の予定はありません</p>}
       {schedules.map((r) => (
         <div key={r.id} className="card">

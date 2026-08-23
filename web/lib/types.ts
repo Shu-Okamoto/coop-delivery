@@ -69,7 +69,7 @@ export type Route = {
   planned_start_time?: string;
   start_time?: string;
   end_time?: string;
-  status: 'planned' | 'in_progress' | 'completed' | 'cancelled';
+  status: 'draft' | 'recruiting' | 'planned' | 'in_progress' | 'completed' | 'cancelled';
   notes?: string;
   stops?: RouteStop[];
   latest_position?: LatestPosition | null;
