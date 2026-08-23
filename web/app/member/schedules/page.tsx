@@ -39,8 +39,9 @@ export default function MySchedulesPage() {
     load();
   }, []);
 
-  // 未予定（draft）のルートだけ予定作成の対象に
+  // ルート（再利用可能なテンプレート）と予定インスタンスを分ける
   const draftRoutes = routes.filter((r) => r.status === 'draft');
+  const scheduleRoutes = routes.filter((r) => r.status !== 'draft');
 
   const createPlan = async () => {
     setPlanMsg(null); setError(null);
@@ -124,10 +125,24 @@ export default function MySchedulesPage() {
           )}
         </div>
 
-        <h3 style={{ margin: '20px 0 8px' }}>ルート・予定一覧</h3>
-        {routes.length === 0 && <p className="empty">まだルート・予定はありません。</p>}
+        {/* ルート一覧（再利用できるテンプレート） */}
+        <h3 style={{ margin: '20px 0 8px' }}>ルート一覧</h3>
+        {draftRoutes.length === 0 && <p className="empty">まだルートはありません。「＋ ルート作成」で作成してください。</p>}
+        {draftRoutes.map((r) => (
+          <div key={r.id} className="card">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <b>{r.name}</b>
+              <span className="badge" style={{ background: statusColor(r.status) }}>{statusLabel(r.status)}</span>
+              <span style={{ marginLeft: 'auto', fontSize: 12, color: '#7a8a99' }}>再利用可</span>
+            </div>
+          </div>
+        ))}
 
-        {routes.map((r) => (
+        {/* 予定一覧（日付付きの予定インスタンス） */}
+        <h3 style={{ margin: '20px 0 8px' }}>予定一覧</h3>
+        {scheduleRoutes.length === 0 && <p className="empty">まだ予定はありません。上の「予定作成」から作成してください。</p>}
+
+        {scheduleRoutes.map((r) => (
           <div key={r.id} className="card">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <b>{r.name}</b>
