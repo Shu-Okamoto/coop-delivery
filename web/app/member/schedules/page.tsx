@@ -95,6 +95,7 @@ export default function MySchedulesPage() {
           <h3 style={{ marginTop: 0 }}>予定作成</h3>
           <p style={{ fontSize: 12, color: '#7a8a99' }}>
             作成済みのルートを選び、配送日を決めると集荷募集が始まります（締切は前日18時）。
+            ルートは消費されず、同じルートから何度でも予定を作成できます。
           </p>
           {draftRoutes.length === 0 ? (
             <p style={{ fontSize: 13, color: '#7a8a99' }}>
