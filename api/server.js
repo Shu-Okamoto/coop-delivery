@@ -894,7 +894,8 @@ app.post('/api/schedules/draft', requireActor, wrap(async (req, res) => {
   res.json({ id: route.id, route_code: code });
 }));
 
-// 下書きを予定化 → 集荷募集開始。日付・半径を決め、締切を前日18時に設定。
+// ルートを元に予定を作成 → 集荷募集開始。
+// ルート(テンプレート)は再利用できるよう残し、日付付きの予定を「複製」で新規作成する。
 app.post('/api/schedules/:id/publish', requireActor, wrap(async (req, res) => {
   const id = +req.params.id;
   const { scheduled_date, radius_km } = req.body || {};
@@ -906,15 +907,40 @@ app.post('/api/schedules/:id/publish', requireActor, wrap(async (req, res) => {
     return res.status(403).json({ error: '作成者のみ予定化できます' });
   }
 
-  const { error } = await supabase.from('routes').update({
+  // 元ルートの経由地を取得
+  const { data: srcStops, error: eStops } = await supabase
+    .from('route_stops').select('*').eq('route_id', id).order('stop_order');
+  if (eStops) throw eStops;
+
+  // 予定インスタンスを新規作成（元ルートはテンプレートとして残す）
+  const code = 'RT-' + Date.now().toString(36).toUpperCase();
+  const { data: sched, error: eIns } = await supabase.from('routes').insert({
+    route_code: code,
+    name: route.name,
     scheduled_date,
     status: 'recruiting',
-    radius_km: radius_km != null ? Number(radius_km) : 10,
+    radius_km: radius_km != null ? Number(radius_km) : (route.radius_km || 10),
     pickup_deadline: prevDay18JST(scheduled_date),
-    updated_at: new Date().toISOString(),
-  }).eq('id', id);
-  if (error) throw error;
-  res.json({ ok: true });
+    created_by_member_id: route.created_by_member_id,
+    notes: route.notes || null,
+  }).select().single();
+  if (eIns) throw eIns;
+
+  // 経由地を複製（完了状態・写真などはコピーしない）
+  if (srcStops && srcStops.length > 0) {
+    const rows = srcStops.map((s, i) => ({
+      route_id: sched.id, stop_order: i + 1,
+      stop_type: s.stop_type, member_id: s.member_id || null,
+      address: s.address, lat: s.lat, lng: s.lng,
+      cargo_description: s.cargo_description || null,
+      weight_kg: s.weight_kg || null,
+      refrigerated: !!s.refrigerated,
+      scheduled_time: s.scheduled_time || null,
+    }));
+    const { error: eCopy } = await supabase.from('route_stops').insert(rows);
+    if (eCopy) { await supabase.from('routes').delete().eq('id', sched.id); throw eCopy; }
+  }
+  res.json({ ok: true, id: sched.id, route_code: code });
 }));
 
 // 集荷募集中の予定一覧（組合員が依頼先を探す用）。重心・半径付き。
