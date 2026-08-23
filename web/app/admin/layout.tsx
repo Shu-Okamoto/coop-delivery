@@ -9,6 +9,7 @@ function AdminNav() {
     { href: '/admin', label: 'ダッシュボード', exact: true },
     { href: '/admin/routes', label: 'ルート管理', exact: false },
     { href: '/admin/routes/new', label: '＋ 新規ルート', exact: true },
+    { href: '/admin/schedules', label: '予定作成', exact: false },
     { href: '/admin/history', label: '配送履歴', exact: false },
     { href: '/admin/masters', label: 'マスタ管理', exact: false },
   ];
