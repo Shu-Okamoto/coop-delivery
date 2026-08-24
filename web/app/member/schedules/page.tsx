@@ -1,13 +1,14 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { memberGet, memberPost, getMemberSession, statusLabel, statusColor } from '@/lib/api';
+import { memberGet, memberPost, memberPut, getMemberSession, statusLabel, statusColor } from '@/lib/api';
 import CapacityView, { type CapacitySchedule } from '@/components/CapacityView';
 
 type MyRoute = {
   id: number; route_code: string; name: string;
   scheduled_date: string | null; status: string;
   radius_km: number | null; pickup_deadline: string | null;
+  capacity_kg: number | null; initial_load_kg: number | null;
 };
 
 type Req = {
@@ -38,6 +39,28 @@ export default function MySchedulesPage() {
   const [planMsg, setPlanMsg] = useState<string | null>(null);
   const [capOpenId, setCapOpenId] = useState<number | null>(null);
   const [capById, setCapById] = useState<Record<number, CapacitySchedule>>({});
+  const [editId, setEditId] = useState<number | null>(null);
+  const [edit, setEdit] = useState({ scheduled_date: '', radius_km: '', capacity_kg: '', initial_load_kg: '' });
+
+  const openEdit = (r: MyRoute) => {
+    setEdit({
+      scheduled_date: r.scheduled_date || '',
+      radius_km: r.radius_km != null ? String(r.radius_km) : '',
+      capacity_kg: r.capacity_kg != null ? String(r.capacity_kg) : '',
+      initial_load_kg: r.initial_load_kg != null ? String(r.initial_load_kg) : '',
+    });
+    setEditId(r.id);
+  };
+  const saveEdit = async (id: number) => {
+    try {
+      await memberPut(`/api/schedules/${id}`, edit);
+      setEditId(null);
+      setCapById((prev) => { const n = { ...prev }; delete n[id]; return n; });
+      load();
+    } catch (e: any) {
+      alert('編集に失敗: ' + e.message);
+    }
+  };
 
   const load = () => {
     memberGet<MyRoute[]>('/api/my/schedules').then(setRoutes).catch((e) => setError(e.message));
@@ -189,6 +212,35 @@ export default function MySchedulesPage() {
                 <button className="btn secondary small" onClick={() => toggleCap(r.id)}>
                   {capOpenId === r.id ? '積載状況を隠す' : '📦 積載状況'}
                 </button>
+                <button className="btn secondary small" onClick={() => (editId === r.id ? setEditId(null) : openEdit(r))}>
+                  {editId === r.id ? '編集を閉じる' : '✏️ 予定を編集'}
+                </button>
+              </div>
+            )}
+            {editId === r.id && (
+              <div style={{ marginTop: 10, borderTop: '1px solid #eee', paddingTop: 10 }}>
+                <div className="form-grid">
+                  <label>配送日
+                    <input type="date" value={edit.scheduled_date}
+                           onChange={(e) => setEdit({ ...edit, scheduled_date: e.target.value })} />
+                  </label>
+                  <label>半径(km)
+                    <input type="number" value={edit.radius_km}
+                           onChange={(e) => setEdit({ ...edit, radius_km: e.target.value })} />
+                  </label>
+                  <label>トラック容量(kg)
+                    <input type="number" value={edit.capacity_kg}
+                           onChange={(e) => setEdit({ ...edit, capacity_kg: e.target.value })} />
+                  </label>
+                  <label>出発時の積載(kg)
+                    <input type="number" step="0.1" value={edit.initial_load_kg}
+                           onChange={(e) => setEdit({ ...edit, initial_load_kg: e.target.value })} />
+                  </label>
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button className="btn small" onClick={() => saveEdit(r.id)}>保存</button>
+                  <button className="btn secondary small" onClick={() => setEditId(null)}>キャンセル</button>
+                </div>
               </div>
             )}
             {capOpenId === r.id && capById[r.id] && (
