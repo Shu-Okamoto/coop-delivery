@@ -948,8 +948,9 @@ async function loadScheduleWithGeo(routeId) {
     .select('*, drivers(name), vehicles(name), members:created_by_member_id(name)')
     .eq('id', routeId).single();
   if (error || !route) return null;
-  const { data: stops } = await supabase
-    .from('route_stops').select('*').eq('route_id', routeId).order('stop_order');
+  const { data: stopsRaw } = await supabase
+    .from('route_stops').select('*, members(name)').eq('route_id', routeId).order('stop_order');
+  const stops = (stopsRaw || []).map((s) => ({ ...s, member_name: s.members?.name || null }));
   const center = centroidOfStops(stops);
 
   // 積載タイムライン: 出発時の自社積載から、集荷で+・配達で- していく
@@ -1086,6 +1087,30 @@ app.get('/api/schedules/:id', requireActor, wrap(async (req, res) => {
   const schedule = await loadScheduleWithGeo(+req.params.id);
   if (!schedule) return res.status(404).json({ error: 'not found' });
   res.json(schedule);
+}));
+
+// 予定編集（作成者 or 管理者）。日付・半径・容量・初期積載・名称・備考を更新。
+app.put('/api/schedules/:id', requireActor, wrap(async (req, res) => {
+  const id = +req.params.id;
+  const b = req.body || {};
+  const { data: route } = await supabase.from('routes').select('*').eq('id', id).single();
+  if (!route) return res.status(404).json({ error: 'not found' });
+  if (req.actor.kind === 'member' && route.created_by_member_id !== req.actor.member.id) {
+    return res.status(403).json({ error: '作成者のみ編集できます' });
+  }
+  const update = { updated_at: new Date().toISOString() };
+  if (b.name !== undefined) update.name = b.name;
+  if (b.notes !== undefined) update.notes = b.notes || null;
+  if (b.radius_km !== undefined && b.radius_km !== '') update.radius_km = Number(b.radius_km);
+  if (b.capacity_kg !== undefined) update.capacity_kg = b.capacity_kg === '' ? null : Number(b.capacity_kg);
+  if (b.initial_load_kg !== undefined) update.initial_load_kg = b.initial_load_kg === '' ? 0 : Number(b.initial_load_kg);
+  if (b.scheduled_date !== undefined && b.scheduled_date) {
+    update.scheduled_date = b.scheduled_date;
+    update.pickup_deadline = prevDay18JST(b.scheduled_date);
+  }
+  const { error } = await supabase.from('routes').update(update).eq('id', id);
+  if (error) throw error;
+  res.json({ ok: true });
 }));
 
 // 自分が作成した予定・下書き一覧（マイページ用）

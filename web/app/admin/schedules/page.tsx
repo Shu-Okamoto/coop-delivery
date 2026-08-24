@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
-import { apiGet, apiPost, statusLabel, statusColor } from '@/lib/api';
+import { apiGet, apiPost, apiPut, statusLabel, statusColor } from '@/lib/api';
 import type { Route } from '@/lib/types';
 import CapacityView, { type CapacitySchedule } from '@/components/CapacityView';
 
@@ -40,6 +40,34 @@ export default function AdminSchedulesPage() {
   const [planMsg, setPlanMsg] = useState<string | null>(null);
   const [capOpenId, setCapOpenId] = useState<number | null>(null);
   const [capById, setCapById] = useState<Record<number, CapacitySchedule>>({});
+  const [editId, setEditId] = useState<number | null>(null);
+  const [edit, setEdit] = useState({ scheduled_date: '', radius_km: '', capacity_kg: '', initial_load_kg: '' });
+
+  const openEdit = async (routeId: number) => {
+    if (editId === routeId) { setEditId(null); return; }
+    try {
+      const d = await apiGet<any>(`/api/schedules/${routeId}`);
+      setEdit({
+        scheduled_date: d.scheduled_date || '',
+        radius_km: d.radius_km != null ? String(d.radius_km) : '',
+        capacity_kg: d.capacity_kg != null ? String(d.capacity_kg) : '',
+        initial_load_kg: d.initial_load_kg != null ? String(d.initial_load_kg) : '',
+      });
+      setEditId(routeId);
+    } catch (e: any) {
+      alert('取得に失敗: ' + e.message);
+    }
+  };
+  const saveEdit = async (id: number) => {
+    try {
+      await apiPut(`/api/schedules/${id}`, edit);
+      setEditId(null);
+      setCapById((prev) => { const n = { ...prev }; delete n[id]; return n; });
+      load();
+    } catch (e: any) {
+      alert('編集に失敗: ' + e.message);
+    }
+  };
 
   const load = useCallback(async () => {
     setError(null);
@@ -180,10 +208,39 @@ export default function AdminSchedulesPage() {
             <button className="btn secondary small" onClick={() => toggleCap(r.id)}>
               {capOpenId === r.id ? '積載状況を隠す' : '📦 積載状況'}
             </button>
+            <button className="btn secondary small" onClick={() => openEdit(r.id)}>
+              {editId === r.id ? '編集を閉じる' : '✏️ 予定を編集'}
+            </button>
           </div>
           {capOpenId === r.id && capById[r.id] && (
             <div style={{ marginTop: 10, borderTop: '1px solid #eee', paddingTop: 10 }}>
               <CapacityView schedule={capById[r.id]} />
+            </div>
+          )}
+          {editId === r.id && (
+            <div style={{ marginTop: 10, borderTop: '1px solid #eee', paddingTop: 10 }}>
+              <div className="form-grid">
+                <label>配送日
+                  <input type="date" value={edit.scheduled_date}
+                         onChange={(e) => setEdit({ ...edit, scheduled_date: e.target.value })} />
+                </label>
+                <label>半径(km)
+                  <input type="number" value={edit.radius_km}
+                         onChange={(e) => setEdit({ ...edit, radius_km: e.target.value })} />
+                </label>
+                <label>トラック容量(kg)
+                  <input type="number" value={edit.capacity_kg}
+                         onChange={(e) => setEdit({ ...edit, capacity_kg: e.target.value })} />
+                </label>
+                <label>出発時の積載(kg)
+                  <input type="number" step="0.1" value={edit.initial_load_kg}
+                         onChange={(e) => setEdit({ ...edit, initial_load_kg: e.target.value })} />
+                </label>
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <button className="btn small" onClick={() => saveEdit(r.id)}>保存</button>
+                <button className="btn secondary small" onClick={() => setEditId(null)}>キャンセル</button>
+              </div>
             </div>
           )}
           {openId === r.id && (

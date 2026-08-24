@@ -5,6 +5,7 @@ export type CapacityStop = {
   stop_order: number;
   stop_type: 'pickup' | 'delivery';
   address: string;
+  member_name?: string | null;
   weight_kg?: number | null;
   load_after_kg?: number | null;
   util_pct?: number | null;
@@ -67,8 +68,9 @@ export default function CapacityView({ schedule }: { schedule: CapacitySchedule 
 
       {stops.map((s, i) => (
         <div key={s.id ?? i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-          <span style={{ width: 90, fontSize: 12, color: '#7a8a99', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {s.stop_type === 'pickup' ? '🟠 集荷' : '🟢 配達'}{s.stop_order}
+          <span title={s.member_name || s.address}
+                style={{ width: 140, fontSize: 12, color: '#555', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {s.stop_type === 'pickup' ? '🟠' : '🟢'} {s.member_name || s.address || `地点${s.stop_order}`}
           </span>
           <Bar pct={s.util_pct} />
           <span style={{ width: 130, fontSize: 12, textAlign: 'right' }}>
