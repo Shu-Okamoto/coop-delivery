@@ -8,6 +8,7 @@ type MyRequest = {
   cargo_description: string | null; ready_time: string | null;
   quantity: number | null; weight_kg: number | null;
   status: string; created_at: string; note: string | null;
+  estimated_fee: number | null; final_fee: number | null;
 };
 
 const reqLabel: Record<string, string> = { pending: '承認待ち', approved: '成立', rejected: '却下' };
@@ -47,6 +48,10 @@ export default function MyRequestsPage() {
               {r.quantity != null ? ` / 数量 ${r.quantity}` : ''}
               {r.weight_kg != null ? ` / ${r.weight_kg}kg` : ''}
               {r.ready_time ? ` / 準備完了 ${r.ready_time}` : ''}
+              <div style={{ color: '#8e44ad', fontWeight: 'bold' }}>
+                💴 {r.final_fee != null ? `確定 ¥${r.final_fee.toLocaleString()}`
+                    : r.estimated_fee != null ? `概算 ¥${r.estimated_fee.toLocaleString()}` : '—'}
+              </div>
               {r.note ? <div>備考: {r.note}</div> : null}
             </div>
           </div>

@@ -14,9 +14,13 @@ type Req = {
   pickup_address: string | null; cargo_description: string | null;
   ready_time: string | null; quantity: number | null; weight_kg: number | null;
   refrigerated: boolean; status: string; note: string | null;
+  estimated_fee: number | null; final_fee: number | null;
 };
 
 const reqLabel: Record<string, string> = { pending: '承認待ち', approved: '成立', rejected: '却下' };
+const feeText = (q: { estimated_fee: number | null; final_fee: number | null }) =>
+  q.final_fee != null ? `確定 ¥${q.final_fee.toLocaleString()}`
+  : q.estimated_fee != null ? `概算 ¥${q.estimated_fee.toLocaleString()}` : '';
 
 export default function MySchedulesPage() {
   const [routes, setRoutes] = useState<MyRoute[]>([]);
@@ -179,6 +183,7 @@ export default function MySchedulesPage() {
                       {q.ready_time ? ` / 準備 ${q.ready_time}` : ''}
                       {q.refrigerated ? ' ❄️' : ''}
                       {q.note ? ` / 備考: ${q.note}` : ''}
+                      {feeText(q) ? <span style={{ color: '#8e44ad', fontWeight: 'bold' }}> / 💴 {feeText(q)}</span> : null}
                     </div>
                     {q.status === 'pending' && (
                       <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>

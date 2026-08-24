@@ -26,6 +26,7 @@ export default function RecruitingPage() {
     quantity: '', weight_kg: '', refrigerated: false,
     delivery_member_id: 0, note: '',
   });
+  const [estFee, setEstFee] = useState<number | null>(null);
 
   const load = () => {
     memberGet<Schedule[]>('/api/schedules?status=recruiting').then(setSchedules).catch((e) => setError(e.message));
@@ -75,6 +76,19 @@ export default function RecruitingPage() {
       setError(e.message);
     }
   };
+
+  // フォーム変更に応じて概算料金を計算
+  useEffect(() => {
+    if (openId == null) { setEstFee(null); return; }
+    const pickup = members.find((m) => m.id === form.pickup_member_id);
+    if (!pickup || pickup.lat == null || pickup.lng == null) { setEstFee(null); return; }
+    const delivery = members.find((m) => m.id === form.delivery_member_id);
+    memberPost<{ fee: number }>('/api/pricing/quote', {
+      pickup_lat: pickup.lat, pickup_lng: pickup.lng,
+      delivery_lat: delivery?.lat ?? null, delivery_lng: delivery?.lng ?? null,
+      weight_kg: form.weight_kg, refrigerated: form.refrigerated,
+    }).then((r) => setEstFee(r.fee)).catch(() => setEstFee(null));
+  }, [openId, form.pickup_member_id, form.delivery_member_id, form.weight_kg, form.refrigerated, members]);
 
   const withCoords = members.filter((m) => m.lat != null && m.lng != null);
 
@@ -142,6 +156,10 @@ export default function RecruitingPage() {
                   <label className="full">備考
                     <input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
                   </label>
+                </div>
+                <div style={{ marginTop: 10, padding: 8, background: '#f3eefa', borderRadius: 6, fontSize: 14 }}>
+                  概算料金: <b>{estFee != null ? `¥${estFee.toLocaleString()}` : '—'}</b>
+                  <span style={{ fontSize: 11, color: '#7a8a99' }}>（確定は承認時）</span>
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                   <button className="btn" onClick={() => submit(s)}>依頼を送信</button>
