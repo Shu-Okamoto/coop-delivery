@@ -1,0 +1,87 @@
+'use client';
+
+export type CapacityStop = {
+  id?: number;
+  stop_order: number;
+  stop_type: 'pickup' | 'delivery';
+  address: string;
+  weight_kg?: number | null;
+  load_after_kg?: number | null;
+  util_pct?: number | null;
+};
+
+export type CapacitySchedule = {
+  capacity_kg?: number | null;
+  initial_load_kg?: number | null;
+  initial_util_pct?: number | null;
+  stops?: CapacityStop[];
+};
+
+const barColor = (pct: number | null | undefined) => {
+  if (pct == null) return '#bdc3c7';
+  if (pct < 70) return '#27ae60';
+  if (pct < 90) return '#e67e22';
+  return '#c0392b';
+};
+const roomLabel = (pct: number | null | undefined) => {
+  if (pct == null) return '';
+  if (pct < 70) return '余裕';
+  if (pct < 90) return 'やや混雑';
+  return 'ひっ迫';
+};
+
+function Bar({ pct }: { pct: number | null | undefined }) {
+  const w = pct == null ? 0 : Math.min(100, Math.max(0, pct));
+  return (
+    <div style={{ background: '#eef2f4', borderRadius: 4, height: 10, overflow: 'hidden', flex: 1 }}>
+      <div style={{ width: `${w}%`, height: '100%', background: barColor(pct) }} />
+    </div>
+  );
+}
+
+export default function CapacityView({ schedule }: { schedule: CapacitySchedule }) {
+  const cap = schedule.capacity_kg;
+  const stops = schedule.stops || [];
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 13, marginBottom: 8 }}>
+        トラック容量: <b>{cap != null ? `${cap}kg` : '未設定'}</b>
+        {' / '}出発時の積載: <b>{schedule.initial_load_kg ?? 0}kg</b>
+        {schedule.initial_util_pct != null && (
+          <span style={{ color: barColor(schedule.initial_util_pct), fontWeight: 'bold' }}>
+            {' '}（{schedule.initial_util_pct}% 使用・{roomLabel(schedule.initial_util_pct)}）
+          </span>
+        )}
+      </div>
+
+      {/* 出発時 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <span style={{ width: 90, fontSize: 12, color: '#7a8a99' }}>🏁 出発時</span>
+        <Bar pct={schedule.initial_util_pct} />
+        <span style={{ width: 130, fontSize: 12, textAlign: 'right' }}>
+          {schedule.initial_load_kg ?? 0}{cap != null ? `/${cap}` : ''}kg
+          {schedule.initial_util_pct != null ? ` (${schedule.initial_util_pct}%)` : ''}
+        </span>
+      </div>
+
+      {stops.map((s, i) => (
+        <div key={s.id ?? i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          <span style={{ width: 90, fontSize: 12, color: '#7a8a99', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {s.stop_type === 'pickup' ? '🟠 集荷' : '🟢 配達'}{s.stop_order}
+          </span>
+          <Bar pct={s.util_pct} />
+          <span style={{ width: 130, fontSize: 12, textAlign: 'right' }}>
+            {s.load_after_kg ?? 0}{cap != null ? `/${cap}` : ''}kg
+            {s.util_pct != null ? ` (${s.util_pct}%・${roomLabel(s.util_pct)})` : ''}
+          </span>
+        </div>
+      ))}
+      {cap == null && (
+        <p style={{ fontSize: 11, color: '#7a8a99', marginTop: 4 }}>
+          ※ 容量が未設定のため%は表示されません。予定作成時に容量を入力すると余裕度が表示されます。
+        </p>
+      )}
+    </div>
+  );
+}
