@@ -121,6 +121,33 @@ CREATE TABLE IF NOT EXISTS pickup_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_pickup_requests_route ON pickup_requests(route_id);
 
+-- ===== 課金 (フェーズA) =====
+CREATE TABLE IF NOT EXISTS pricing_rules (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '標準',
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  base_fee INTEGER NOT NULL DEFAULT 0,
+  per_stop_fee INTEGER NOT NULL DEFAULT 0,
+  per_km_fee NUMERIC NOT NULL DEFAULT 0,
+  per_kg_fee NUMERIC NOT NULL DEFAULT 0,
+  refrigerated_mode TEXT NOT NULL DEFAULT 'none' CHECK (refrigerated_mode IN ('none','rate','flat')),
+  refrigerated_value NUMERIC NOT NULL DEFAULT 0,
+  min_fee INTEGER NOT NULL DEFAULT 0,
+  rounding TEXT NOT NULL DEFAULT 'ceil' CHECK (rounding IN ('ceil','round','floor')),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+INSERT INTO pricing_rules (name, active, per_stop_fee, rounding)
+SELECT '標準', true, 300, 'ceil'
+WHERE NOT EXISTS (SELECT 1 FROM pricing_rules);
+
+ALTER TABLE pickup_requests
+  ADD COLUMN IF NOT EXISTS distance_km     NUMERIC,
+  ADD COLUMN IF NOT EXISTS stop_count      INTEGER,
+  ADD COLUMN IF NOT EXISTS estimated_fee   INTEGER,
+  ADD COLUMN IF NOT EXISTS final_fee       INTEGER,
+  ADD COLUMN IF NOT EXISTS fee_breakdown   JSONB,
+  ADD COLUMN IF NOT EXISTS pricing_rule_id BIGINT REFERENCES pricing_rules(id);
+
 -- ===== 車両位置ログ =====
 -- ドライバー画面が30秒ごとに送信する位置情報
 CREATE TABLE IF NOT EXISTS vehicle_positions (
@@ -172,7 +199,9 @@ ALTER TABLE routes             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE route_stops        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_positions  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pickup_requests    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pricing_rules      ENABLE ROW LEVEL SECURITY;
 
+DO $$ BEGIN CREATE POLICY "service_role full" ON pricing_rules     FOR ALL TO service_role USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE POLICY "service_role full" ON pickup_requests   FOR ALL TO service_role USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE POLICY "service_role full" ON members           FOR ALL TO service_role USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE POLICY "service_role full" ON vehicles          FOR ALL TO service_role USING (true) WITH CHECK (true); EXCEPTION WHEN duplicate_object THEN NULL; END $$;

@@ -164,6 +164,59 @@ function prevDay18JST(dateStr) {
   return at18.toISOString();
 }
 
+// ===== 課金 =====
+// 有効な料金プランを取得（なければ null）
+async function getActiveRule() {
+  const { data } = await supabase
+    .from('pricing_rules').select('*').eq('active', true).order('id').limit(1).maybeSingle();
+  return data || null;
+}
+// 端数処理
+function roundFee(v, mode) {
+  if (mode === 'floor') return Math.floor(v);
+  if (mode === 'round') return Math.round(v);
+  return Math.ceil(v); // 既定 ceil
+}
+// 料金計算。rule が無ければ全て0。
+function calcFee(rule, { distanceKm = 0, stopCount = 0, weightKg = 0, refrigerated = false }) {
+  if (!rule) return { total: 0, breakdown: { total: 0, note: '料金プラン未設定' } };
+  const base = Number(rule.base_fee || 0);
+  const stops = Number(rule.per_stop_fee || 0) * stopCount;
+  const distance = Number(rule.per_km_fee || 0) * distanceKm;
+  const weight = Number(rule.per_kg_fee || 0) * weightKg;
+  let subtotal = base + stops + distance + weight;
+  let refrigeratedAmt = 0;
+  if (refrigerated) {
+    if (rule.refrigerated_mode === 'rate') refrigeratedAmt = subtotal * Number(rule.refrigerated_value || 0);
+    else if (rule.refrigerated_mode === 'flat') refrigeratedAmt = Number(rule.refrigerated_value || 0);
+    subtotal += refrigeratedAmt;
+  }
+  const minApplied = subtotal < Number(rule.min_fee || 0);
+  const beforeRound = Math.max(subtotal, Number(rule.min_fee || 0));
+  const total = roundFee(beforeRound, rule.rounding);
+  return {
+    total,
+    breakdown: {
+      base, stops: Math.round(stops), distance: Math.round(distance),
+      weight: Math.round(weight), refrigerated: Math.round(refrigeratedAmt),
+      subtotal: Math.round(subtotal), min_applied: minApplied, total,
+    },
+  };
+}
+// 依頼パラメータから距離・地点数・料金を求める
+async function estimateForRequest(b) {
+  const hasPickup = b.pickup_lat != null && b.pickup_lng != null;
+  const hasDelivery = b.delivery_lat != null && b.delivery_lng != null;
+  const distKm = (hasPickup && hasDelivery)
+    ? distanceKm(Number(b.pickup_lat), Number(b.pickup_lng), Number(b.delivery_lat), Number(b.delivery_lng))
+    : 0;
+  const stopCount = (hasPickup ? 1 : 0) + (hasDelivery ? 1 : 0);
+  const weightKg = b.weight_kg != null && b.weight_kg !== '' ? Number(b.weight_kg) : 0;
+  const rule = await getActiveRule();
+  const { total, breakdown } = calcFee(rule, { distanceKm: distKm, stopCount, weightKg, refrigerated: !!b.refrigerated });
+  return { distanceKm: distKm, stopCount, fee: total, breakdown, ruleId: rule ? rule.id : null };
+}
+
 // ===== 認証 (簡易パスワード) =====
 // X-Viewer-Password ヘッダーで viewer/driver/admin を判定
 function checkPassword(req, kind) {
@@ -841,6 +894,50 @@ app.get('/api/positions/history/:routeId', requireViewer, wrap(async (req, res) 
 }));
 
 // ============================================================
+// 課金: 料金プラン設定・見積り
+// ============================================================
+
+// 有効な料金プランを取得
+app.get('/api/pricing', requireActor, wrap(async (req, res) => {
+  const rule = await getActiveRule();
+  res.json(rule || null);
+}));
+
+// 料金プランを設定・更新（管理者）。有効プラン1件を維持。
+app.put('/api/pricing', requireAdmin, wrap(async (req, res) => {
+  const b = req.body || {};
+  const fields = {
+    name: b.name || '標準',
+    active: true,
+    base_fee: Math.max(0, parseInt(b.base_fee || 0, 10)),
+    per_stop_fee: Math.max(0, parseInt(b.per_stop_fee || 0, 10)),
+    per_km_fee: Math.max(0, Number(b.per_km_fee || 0)),
+    per_kg_fee: Math.max(0, Number(b.per_kg_fee || 0)),
+    refrigerated_mode: ['none', 'rate', 'flat'].includes(b.refrigerated_mode) ? b.refrigerated_mode : 'none',
+    refrigerated_value: Math.max(0, Number(b.refrigerated_value || 0)),
+    min_fee: Math.max(0, parseInt(b.min_fee || 0, 10)),
+    rounding: ['ceil', 'round', 'floor'].includes(b.rounding) ? b.rounding : 'ceil',
+    updated_at: new Date().toISOString(),
+  };
+  const existing = await getActiveRule();
+  if (existing) {
+    const { data, error } = await supabase.from('pricing_rules')
+      .update(fields).eq('id', existing.id).select().single();
+    if (error) throw error;
+    return res.json(data);
+  }
+  const { data, error } = await supabase.from('pricing_rules').insert(fields).select().single();
+  if (error) throw error;
+  res.json(data);
+}));
+
+// 概算料金（フォームのリアルタイム表示用）
+app.post('/api/pricing/quote', requireActor, wrap(async (req, res) => {
+  const est = await estimateForRequest(req.body || {});
+  res.json({ distance_km: est.distanceKm, stop_count: est.stopCount, fee: est.fee, breakdown: est.breakdown });
+}));
+
+// ============================================================
 // 機能1: ルート下書き → 予定化（集荷募集）→ 集荷依頼 → 承認
 // ============================================================
 
@@ -1009,6 +1106,8 @@ app.post('/api/schedules/:id/requests', requireMember, wrap(async (req, res) => 
       });
     }
   }
+  // 概算料金を計算して保存
+  const est = await estimateForRequest(b);
   const { data, error } = await supabase.from('pickup_requests').insert({
     route_id: routeId,
     requester_member_id: req.member.id,
@@ -1025,9 +1124,14 @@ app.post('/api/schedules/:id/requests', requireMember, wrap(async (req, res) => 
     delivery_lat: b.delivery_lat != null ? Number(b.delivery_lat) : null,
     delivery_lng: b.delivery_lng != null ? Number(b.delivery_lng) : null,
     note: b.note || null,
+    distance_km: est.distanceKm,
+    stop_count: est.stopCount,
+    estimated_fee: est.fee,
+    fee_breakdown: est.breakdown,
+    pricing_rule_id: est.ruleId,
   }).select().single();
   if (error) throw error;
-  res.json({ ok: true, id: data.id });
+  res.json({ ok: true, id: data.id, estimated_fee: est.fee });
 }));
 
 // 予定に紐づく依頼一覧（作成者 or 管理者）
@@ -1109,10 +1213,21 @@ app.post('/api/requests/:id/approve', requireActor, wrap(async (req, res) => {
   const { error: e2 } = await supabase.from('route_stops').insert(rows);
   if (e2) throw e2;
 
+  // 確定料金を再計算
+  const est = await estimateForRequest({
+    pickup_lat: pr.pickup_lat, pickup_lng: pr.pickup_lng,
+    delivery_lat: pr.delivery_lat, delivery_lng: pr.delivery_lng,
+    weight_kg: pr.weight_kg, refrigerated: pr.refrigerated,
+  });
   const { error: e3 } = await supabase.from('pickup_requests')
-    .update({ status: 'approved', decided_at: new Date().toISOString() }).eq('id', reqId);
+    .update({
+      status: 'approved', decided_at: new Date().toISOString(),
+      final_fee: est.fee, fee_breakdown: est.breakdown,
+      distance_km: est.distanceKm, stop_count: est.stopCount,
+      pricing_rule_id: est.ruleId,
+    }).eq('id', reqId);
   if (e3) throw e3;
-  res.json({ ok: true });
+  res.json({ ok: true, final_fee: est.fee });
 }));
 
 // 依頼を却下

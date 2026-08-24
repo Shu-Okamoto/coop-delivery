@@ -11,6 +11,7 @@ function AdminNav() {
     { href: '/admin/routes/new', label: '＋ 新規ルート', exact: true },
     { href: '/admin/schedules', label: '予定作成', exact: false },
     { href: '/admin/history', label: '配送履歴', exact: false },
+    { href: '/admin/pricing', label: '料金設定', exact: false },
     { href: '/admin/masters', label: 'マスタ管理', exact: false },
   ];
   const logout = () => {
