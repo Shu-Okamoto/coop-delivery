@@ -959,8 +959,11 @@ async function loadScheduleWithGeo(routeId) {
   const pct = (v) => (capacity && capacity > 0 ? Math.round((v / capacity) * 100) : null);
   const stopsWithLoad = (stops || []).map((s) => {
     const w = s.weight_kg != null ? Number(s.weight_kg) : 0;
+    const own = s.own_unload_kg != null ? Number(s.own_unload_kg) : 0;
     if (s.stop_type === 'pickup') load += w;
-    else load = Math.max(0, load - w);
+    else load -= w;
+    load -= own; // その地点で下ろす自社の荷
+    load = Math.max(0, load);
     return { ...s, load_after_kg: Math.round(load * 10) / 10, util_pct: pct(load) };
   });
 
@@ -1110,6 +1113,17 @@ app.put('/api/schedules/:id', requireActor, wrap(async (req, res) => {
   }
   const { error } = await supabase.from('routes').update(update).eq('id', id);
   if (error) throw error;
+
+  // 経由地ごとの自社荷下ろし量を更新
+  if (Array.isArray(b.stop_unloads)) {
+    for (const su of b.stop_unloads) {
+      if (su && su.id != null) {
+        await supabase.from('route_stops')
+          .update({ own_unload_kg: su.own_unload_kg === '' || su.own_unload_kg == null ? 0 : Number(su.own_unload_kg) })
+          .eq('id', su.id).eq('route_id', id);
+      }
+    }
+  }
   res.json({ ok: true });
 }));
 
