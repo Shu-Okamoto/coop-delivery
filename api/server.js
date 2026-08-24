@@ -953,18 +953,33 @@ async function loadScheduleWithGeo(routeId) {
   const stops = (stopsRaw || []).map((s) => ({ ...s, member_name: s.members?.name || null }));
   const center = centroidOfStops(stops);
 
-  // 積載タイムライン: 出発時の自社積載から、集荷で+・配達で- していく
+  // 積載タイムライン: 自社荷物と依頼荷物を統合して合計積載を計算
+  //  - 自社分: 出発時の initial_load_kg から、各地点の own_unload_kg を下ろす
+  //  - 依頼分: 集荷(pickup)で + / 配達(delivery)で - （承認された依頼の地点）
   const capacity = route.capacity_kg != null ? Number(route.capacity_kg) : null;
-  let load = route.initial_load_kg != null ? Number(route.initial_load_kg) : 0;
+  let ownLoad = route.initial_load_kg != null ? Number(route.initial_load_kg) : 0;
+  let reqLoad = 0;
   const pct = (v) => (capacity && capacity > 0 ? Math.round((v / capacity) * 100) : null);
+  const r1 = (v) => Math.round(v * 10) / 10;
+  let peak = ownLoad; // 出発時を初期ピーク
   const stopsWithLoad = (stops || []).map((s) => {
     const w = s.weight_kg != null ? Number(s.weight_kg) : 0;
     const own = s.own_unload_kg != null ? Number(s.own_unload_kg) : 0;
-    if (s.stop_type === 'pickup') load += w;
-    else load -= w;
-    load -= own; // その地点で下ろす自社の荷
-    load = Math.max(0, load);
-    return { ...s, load_after_kg: Math.round(load * 10) / 10, util_pct: pct(load) };
+    if (s.stop_type === 'pickup') reqLoad += w;
+    else reqLoad -= w;
+    ownLoad -= own;
+    if (ownLoad < 0) ownLoad = 0;
+    if (reqLoad < 0) reqLoad = 0;
+    const total = ownLoad + reqLoad;
+    if (total > peak) peak = total;
+    return {
+      ...s,
+      own_load_kg: r1(ownLoad),
+      request_load_kg: r1(reqLoad),
+      load_after_kg: r1(total),
+      util_pct: pct(total),
+      over_capacity: capacity != null && total > capacity,
+    };
   });
 
   return {
@@ -975,6 +990,9 @@ async function loadScheduleWithGeo(routeId) {
     capacity_kg: capacity,
     initial_load_kg: route.initial_load_kg != null ? Number(route.initial_load_kg) : 0,
     initial_util_pct: pct(route.initial_load_kg != null ? Number(route.initial_load_kg) : 0),
+    peak_load_kg: r1(peak),
+    peak_util_pct: pct(peak),
+    over_capacity: capacity != null && peak > capacity,
     stops: stopsWithLoad,
     center,
   };

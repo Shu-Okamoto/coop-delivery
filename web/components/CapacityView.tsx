@@ -9,13 +9,19 @@ export type CapacityStop = {
   weight_kg?: number | null;
   own_unload_kg?: number | null;
   load_after_kg?: number | null;
+  own_load_kg?: number | null;
+  request_load_kg?: number | null;
   util_pct?: number | null;
+  over_capacity?: boolean;
 };
 
 export type CapacitySchedule = {
   capacity_kg?: number | null;
   initial_load_kg?: number | null;
   initial_util_pct?: number | null;
+  peak_load_kg?: number | null;
+  peak_util_pct?: number | null;
+  over_capacity?: boolean;
   stops?: CapacityStop[];
 };
 
@@ -55,6 +61,19 @@ export default function CapacityView({ schedule }: { schedule: CapacitySchedule 
             {' '}（{schedule.initial_util_pct}% 使用・{roomLabel(schedule.initial_util_pct)}）
           </span>
         )}
+        <div style={{ marginTop: 4 }}>
+          最大積載（自社＋依頼の合計ピーク）: <b>{schedule.peak_load_kg ?? 0}kg</b>
+          {schedule.peak_util_pct != null && (
+            <span style={{ color: barColor(schedule.peak_util_pct), fontWeight: 'bold' }}>
+              {' '}（{schedule.peak_util_pct}%・{roomLabel(schedule.peak_util_pct)}）
+            </span>
+          )}
+        </div>
+        {schedule.over_capacity && (
+          <div style={{ marginTop: 4, color: '#fff', background: '#c0392b', padding: '4px 8px', borderRadius: 4, fontWeight: 'bold' }}>
+            ⚠️ 容量を超過しています。依頼の見直しか容量の調整が必要です。
+          </div>
+        )}
       </div>
 
       {/* 出発時 */}
@@ -75,9 +94,15 @@ export default function CapacityView({ schedule }: { schedule: CapacitySchedule 
             {s.own_unload_kg ? <span style={{ color: '#2980b9' }}>（自社-{s.own_unload_kg}kg）</span> : null}
           </span>
           <Bar pct={s.util_pct} />
-          <span style={{ width: 130, fontSize: 12, textAlign: 'right' }}>
-            {s.load_after_kg ?? 0}{cap != null ? `/${cap}` : ''}kg
-            {s.util_pct != null ? ` (${s.util_pct}%・${roomLabel(s.util_pct)})` : ''}
+          <span style={{ width: 190, fontSize: 12, textAlign: 'right' }}>
+            <span title="自社＋依頼の合計">
+              {s.load_after_kg ?? 0}{cap != null ? `/${cap}` : ''}kg
+            </span>
+            <span style={{ color: '#7a8a99' }}>
+              {' '}（自社{s.own_load_kg ?? 0}＋依頼{s.request_load_kg ?? 0}）
+            </span>
+            {s.util_pct != null ? ` ${s.util_pct}%` : ''}
+            {s.over_capacity ? <span style={{ color: '#c0392b', fontWeight: 'bold' }}> ⚠超過</span> : null}
           </span>
         </div>
       ))}
