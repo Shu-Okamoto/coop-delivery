@@ -7,6 +7,7 @@ export type CapacityStop = {
   address: string;
   member_name?: string | null;
   weight_kg?: number | null;
+  own_unload_kg?: number | null;
   load_after_kg?: number | null;
   util_pct?: number | null;
 };
@@ -71,6 +72,7 @@ export default function CapacityView({ schedule }: { schedule: CapacitySchedule 
           <span title={s.member_name || s.address}
                 style={{ width: 140, fontSize: 12, color: '#555', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {s.stop_type === 'pickup' ? '🟠' : '🟢'} {s.member_name || s.address || `地点${s.stop_order}`}
+            {s.own_unload_kg ? <span style={{ color: '#2980b9' }}>（自社-{s.own_unload_kg}kg）</span> : null}
           </span>
           <Bar pct={s.util_pct} />
           <span style={{ width: 130, fontSize: 12, textAlign: 'right' }}>

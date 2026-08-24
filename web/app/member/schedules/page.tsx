@@ -41,19 +41,31 @@ export default function MySchedulesPage() {
   const [capById, setCapById] = useState<Record<number, CapacitySchedule>>({});
   const [editId, setEditId] = useState<number | null>(null);
   const [edit, setEdit] = useState({ scheduled_date: '', radius_km: '', capacity_kg: '', initial_load_kg: '' });
+  const [editStops, setEditStops] = useState<{ id: number; label: string; stop_type: string; own_unload_kg: string }[]>([]);
 
-  const openEdit = (r: MyRoute) => {
+  const openEdit = async (r: MyRoute) => {
+    if (editId === r.id) { setEditId(null); return; }
     setEdit({
       scheduled_date: r.scheduled_date || '',
       radius_km: r.radius_km != null ? String(r.radius_km) : '',
       capacity_kg: r.capacity_kg != null ? String(r.capacity_kg) : '',
       initial_load_kg: r.initial_load_kg != null ? String(r.initial_load_kg) : '',
     });
+    try {
+      const d = await memberGet<any>(`/api/schedules/${r.id}`);
+      setEditStops((d.stops || []).map((s: any) => ({
+        id: s.id, label: s.member_name || s.address || `地点${s.stop_order}`,
+        stop_type: s.stop_type, own_unload_kg: s.own_unload_kg != null ? String(s.own_unload_kg) : '0',
+      })));
+    } catch { setEditStops([]); }
     setEditId(r.id);
   };
   const saveEdit = async (id: number) => {
     try {
-      await memberPut(`/api/schedules/${id}`, edit);
+      await memberPut(`/api/schedules/${id}`, {
+        ...edit,
+        stop_unloads: editStops.map((s) => ({ id: s.id, own_unload_kg: s.own_unload_kg })),
+      });
       setEditId(null);
       setCapById((prev) => { const n = { ...prev }; delete n[id]; return n; });
       load();
@@ -237,6 +249,21 @@ export default function MySchedulesPage() {
                            onChange={(e) => setEdit({ ...edit, initial_load_kg: e.target.value })} />
                   </label>
                 </div>
+                {editStops.length > 0 && (
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ fontSize: 13, fontWeight: 'bold', marginBottom: 4 }}>経由地で下ろす自社の荷(kg)</div>
+                    {editStops.map((s, i) => (
+                      <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                        <span style={{ flex: 1, fontSize: 13 }}>
+                          {s.stop_type === 'pickup' ? '🟠' : '🟢'} {s.label}
+                        </span>
+                        <input type="number" step="0.1" style={{ width: 90 }} value={s.own_unload_kg}
+                               onChange={(e) => setEditStops((prev) => prev.map((x, idx) => idx === i ? { ...x, own_unload_kg: e.target.value } : x))} />
+                        <span style={{ fontSize: 12, color: '#7a8a99' }}>kg</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                   <button className="btn small" onClick={() => saveEdit(r.id)}>保存</button>
                   <button className="btn secondary small" onClick={() => setEditId(null)}>キャンセル</button>

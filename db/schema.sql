@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS route_stops (
   completed BOOLEAN DEFAULT FALSE,
   notes TEXT,
   photo_url TEXT,                         -- Supabase Storage の公開URL
+  own_unload_kg NUMERIC DEFAULT 0,        -- その地点で下ろす自社の荷(kg)
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
