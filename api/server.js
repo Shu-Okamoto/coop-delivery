@@ -1167,36 +1167,64 @@ app.post('/api/schedules/:id/requests', requireMember, wrap(async (req, res) => 
   if (schedule.pickup_deadline && new Date(schedule.pickup_deadline) < new Date()) {
     return res.status(409).json({ error: '締切（前日18時）を過ぎています' });
   }
-  if (b.pickup_lat == null || b.pickup_lng == null) {
-    return res.status(400).json({ error: '集荷場所の座標が必要です' });
-  }
-  // 半径判定（経由地の重心から radius_km 以内）
-  if (schedule.center) {
-    const d = distanceKm(schedule.center.lat, schedule.center.lng, Number(b.pickup_lat), Number(b.pickup_lng));
-    const limit = Number(schedule.radius_km || 10);
-    if (d > limit) {
-      return res.status(422).json({
-        error: `集荷場所がルート範囲外です（中心から約${d.toFixed(1)}km / 上限${limit}km）`,
-      });
+
+  const stops = schedule.stops || [];
+  // ---- 集荷地の解決: 予定の経由地 or 新しい集荷地(半径内) ----
+  let pickupLat, pickupLng, pickupAddr = b.pickup_address || null, pickupOrder = null;
+  if (b.pickup_stop_id) {
+    const st = stops.find((s) => s.id === Number(b.pickup_stop_id));
+    if (!st) return res.status(422).json({ error: '選択した集荷経由地が見つかりません' });
+    pickupLat = Number(st.lat); pickupLng = Number(st.lng);
+    pickupAddr = st.member_name || st.address; pickupOrder = st.stop_order;
+  } else {
+    if (b.pickup_lat == null || b.pickup_lng == null) {
+      return res.status(400).json({ error: '集荷場所を選択してください' });
+    }
+    pickupLat = Number(b.pickup_lat); pickupLng = Number(b.pickup_lng);
+    // 新しい集荷地は半径(重心から radius_km)以内のみ
+    if (schedule.center) {
+      const d = distanceKm(schedule.center.lat, schedule.center.lng, pickupLat, pickupLng);
+      const limit = Number(schedule.radius_km || 10);
+      if (d > limit) {
+        return res.status(422).json({ error: `集荷場所がルート範囲外です（中心から約${d.toFixed(1)}km / 上限${limit}km）` });
+      }
     }
   }
+
+  // ---- 配達先の解決: 集荷地からゴールの間の経由地のみ ----
+  let deliveryLat = null, deliveryLng = null, deliveryAddr = null, deliveryMemberId = null;
+  if (b.delivery_stop_id) {
+    const st = stops.find((s) => s.id === Number(b.delivery_stop_id));
+    if (!st) return res.status(422).json({ error: '選択した配達経由地が見つかりません' });
+    // 集荷地が経由地の場合、配達先はそれより後(ゴールまで)の経由地に限定
+    if (pickupOrder != null && st.stop_order <= pickupOrder) {
+      return res.status(422).json({ error: '配達先は集荷地より後の経由地を選んでください' });
+    }
+    deliveryLat = Number(st.lat); deliveryLng = Number(st.lng);
+    deliveryAddr = st.member_name || st.address; deliveryMemberId = st.member_id || null;
+  }
+
   // 概算料金を計算して保存
-  const est = await estimateForRequest(b);
+  const est = await estimateForRequest({
+    pickup_lat: pickupLat, pickup_lng: pickupLng,
+    delivery_lat: deliveryLat, delivery_lng: deliveryLng,
+    weight_kg: b.weight_kg, refrigerated: b.refrigerated,
+  });
   const { data, error } = await supabase.from('pickup_requests').insert({
     route_id: routeId,
     requester_member_id: req.member.id,
-    pickup_address: b.pickup_address || null,
-    pickup_lat: Number(b.pickup_lat),
-    pickup_lng: Number(b.pickup_lng),
+    pickup_address: pickupAddr,
+    pickup_lat: pickupLat,
+    pickup_lng: pickupLng,
     cargo_description: b.cargo_description || null,
     ready_time: b.ready_time || null,
     quantity: b.quantity != null && b.quantity !== '' ? Number(b.quantity) : null,
     weight_kg: b.weight_kg != null && b.weight_kg !== '' ? Number(b.weight_kg) : null,
     refrigerated: !!b.refrigerated,
-    delivery_member_id: b.delivery_member_id || null,
-    delivery_address: b.delivery_address || null,
-    delivery_lat: b.delivery_lat != null ? Number(b.delivery_lat) : null,
-    delivery_lng: b.delivery_lng != null ? Number(b.delivery_lng) : null,
+    delivery_member_id: deliveryMemberId,
+    delivery_address: deliveryAddr,
+    delivery_lat: deliveryLat,
+    delivery_lng: deliveryLng,
     note: b.note || null,
     distance_km: est.distanceKm,
     stop_count: est.stopCount,
