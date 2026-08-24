@@ -193,6 +193,13 @@ export async function memberPut<T = any>(path: string, body: any): Promise<T> {
   return res.json();
 }
 
+export async function memberDelete<T = any>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { method: 'DELETE', headers: { ...memberHeaders() } });
+  if (res.status === 401) throw new Error('UNAUTHORIZED');
+  if (!res.ok) throw new Error(await extractError(res, 'DELETE', path));
+  return res.json();
+}
+
 export const statusLabel = (s: string) =>
   ({
     draft: 'ルート（再利用可）',
