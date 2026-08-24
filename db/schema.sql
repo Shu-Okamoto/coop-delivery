@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS routes (
   pickup_deadline TIMESTAMPTZ,             -- 集荷募集の締切(前日18時)
   radius_km NUMERIC DEFAULT 10,            -- 集荷受付の半径(重心から)
   created_by_member_id BIGINT REFERENCES members(id), -- 予定作成者(組合員)
+  capacity_kg NUMERIC,                     -- トラック最大積載量
+  initial_load_kg NUMERIC DEFAULT 0,       -- 出発時の自社積載
   notes TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()

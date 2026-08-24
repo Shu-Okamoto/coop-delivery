@@ -951,12 +951,27 @@ async function loadScheduleWithGeo(routeId) {
   const { data: stops } = await supabase
     .from('route_stops').select('*').eq('route_id', routeId).order('stop_order');
   const center = centroidOfStops(stops);
+
+  // 積載タイムライン: 出発時の自社積載から、集荷で+・配達で- していく
+  const capacity = route.capacity_kg != null ? Number(route.capacity_kg) : null;
+  let load = route.initial_load_kg != null ? Number(route.initial_load_kg) : 0;
+  const pct = (v) => (capacity && capacity > 0 ? Math.round((v / capacity) * 100) : null);
+  const stopsWithLoad = (stops || []).map((s) => {
+    const w = s.weight_kg != null ? Number(s.weight_kg) : 0;
+    if (s.stop_type === 'pickup') load += w;
+    else load = Math.max(0, load - w);
+    return { ...s, load_after_kg: Math.round(load * 10) / 10, util_pct: pct(load) };
+  });
+
   return {
     ...route,
     creator_name: route.members?.name || null,
     driver_name: route.drivers?.name || null,
     vehicle_name: route.vehicles?.name || null,
-    stops: stops || [],
+    capacity_kg: capacity,
+    initial_load_kg: route.initial_load_kg != null ? Number(route.initial_load_kg) : 0,
+    initial_util_pct: pct(route.initial_load_kg != null ? Number(route.initial_load_kg) : 0),
+    stops: stopsWithLoad,
     center,
   };
 }
@@ -995,7 +1010,7 @@ app.post('/api/schedules/draft', requireActor, wrap(async (req, res) => {
 // ルート(テンプレート)は再利用できるよう残し、日付付きの予定を「複製」で新規作成する。
 app.post('/api/schedules/:id/publish', requireActor, wrap(async (req, res) => {
   const id = +req.params.id;
-  const { scheduled_date, radius_km } = req.body || {};
+  const { scheduled_date, radius_km, capacity_kg, initial_load_kg } = req.body || {};
   if (!scheduled_date) return res.status(400).json({ error: 'scheduled_date は必須です' });
 
   const { data: route } = await supabase.from('routes').select('*').eq('id', id).single();
@@ -1020,6 +1035,8 @@ app.post('/api/schedules/:id/publish', requireActor, wrap(async (req, res) => {
     pickup_deadline: prevDay18JST(scheduled_date),
     created_by_member_id: route.created_by_member_id,
     notes: route.notes || null,
+    capacity_kg: capacity_kg != null && capacity_kg !== '' ? Number(capacity_kg) : (route.capacity_kg || null),
+    initial_load_kg: initial_load_kg != null && initial_load_kg !== '' ? Number(initial_load_kg) : 0,
   }).select().single();
   if (eIns) throw eIns;
 

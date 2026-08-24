@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { apiGet, apiPost, statusLabel, statusColor } from '@/lib/api';
 import type { Route } from '@/lib/types';
+import CapacityView, { type CapacitySchedule } from '@/components/CapacityView';
 
 type ScheduleRow = {
   id: number; route_code: string; name: string;
@@ -34,7 +35,11 @@ export default function AdminSchedulesPage() {
   const [planRouteId, setPlanRouteId] = useState(0);
   const [planDate, setPlanDate] = useState('');
   const [planRadius, setPlanRadius] = useState('10');
+  const [planCapacity, setPlanCapacity] = useState('');
+  const [planInitial, setPlanInitial] = useState('');
   const [planMsg, setPlanMsg] = useState<string | null>(null);
+  const [capOpenId, setCapOpenId] = useState<number | null>(null);
+  const [capById, setCapById] = useState<Record<number, CapacitySchedule>>({});
 
   const load = useCallback(async () => {
     setError(null);
@@ -62,12 +67,24 @@ export default function AdminSchedulesPage() {
     try {
       await apiPost(`/api/schedules/${planRouteId}/publish`, {
         scheduled_date: planDate, radius_km: Number(planRadius),
+        capacity_kg: planCapacity, initial_load_kg: planInitial,
       });
       setPlanMsg('予定を作成し、集荷募集を開始しました（締切は前日18時）。');
-      setPlanRouteId(0); setPlanDate('');
+      setPlanRouteId(0); setPlanDate(''); setPlanCapacity(''); setPlanInitial('');
       load();
     } catch (e: any) {
       setError(e.message);
+    }
+  };
+
+  const toggleCap = async (routeId: number) => {
+    if (capOpenId === routeId) { setCapOpenId(null); return; }
+    try {
+      const detail = await apiGet<CapacitySchedule>(`/api/schedules/${routeId}`);
+      setCapById((prev) => ({ ...prev, [routeId]: detail }));
+      setCapOpenId(routeId);
+    } catch (e: any) {
+      alert('積載状況の取得に失敗: ' + e.message);
     }
   };
 
@@ -128,6 +145,14 @@ export default function AdminSchedulesPage() {
               <input type="number" step="1" value={planRadius}
                      onChange={(e) => setPlanRadius(e.target.value)} />
             </label>
+            <label>トラック容量(kg)
+              <input type="number" step="1" value={planCapacity} placeholder="例: 2000"
+                     onChange={(e) => setPlanCapacity(e.target.value)} />
+            </label>
+            <label>出発時の積載(kg)
+              <input type="number" step="0.1" value={planInitial} placeholder="例: 400"
+                     onChange={(e) => setPlanInitial(e.target.value)} />
+            </label>
           </div>
         )}
         {planMsg && <div style={{ marginTop: 8, color: '#1e7e46', fontSize: 13 }}>{planMsg}</div>}
@@ -148,11 +173,19 @@ export default function AdminSchedulesPage() {
               {r.scheduled_date} / 締切 {fmt(r.pickup_deadline)} / 半径{r.radius_km}km
             </span>
           </div>
-          <div style={{ marginTop: 8 }}>
+          <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn secondary small" onClick={() => toggleReqs(r)}>
               {openId === r.id ? '依頼を隠す' : '集荷依頼を見る／承認'}
             </button>
+            <button className="btn secondary small" onClick={() => toggleCap(r.id)}>
+              {capOpenId === r.id ? '積載状況を隠す' : '📦 積載状況'}
+            </button>
           </div>
+          {capOpenId === r.id && capById[r.id] && (
+            <div style={{ marginTop: 10, borderTop: '1px solid #eee', paddingTop: 10 }}>
+              <CapacityView schedule={capById[r.id]} />
+            </div>
+          )}
           {openId === r.id && (
             <div style={{ marginTop: 12, borderTop: '1px solid #eee', paddingTop: 12 }}>
               {(reqsById[r.id] || []).length === 0 && <p style={{ fontSize: 13, color: '#7a8a99' }}>依頼はまだありません。</p>}
