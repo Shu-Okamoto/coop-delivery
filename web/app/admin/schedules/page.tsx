@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
-import { apiGet, apiPost, apiPut, statusLabel, statusColor } from '@/lib/api';
+import { apiGet, apiPost, apiPut, apiDelete, statusLabel, statusColor } from '@/lib/api';
 import type { Route } from '@/lib/types';
 import CapacityView, { type CapacitySchedule } from '@/components/CapacityView';
 
@@ -113,6 +113,16 @@ export default function AdminSchedulesPage() {
     }
   };
 
+  const del = async (r: ScheduleRow) => {
+    if (!confirm(`予定「${r.name}」を削除しますか？\n経由地・集荷依頼もすべて削除されます。取り消せません。`)) return;
+    try {
+      await apiDelete(`/api/schedules/${r.id}`);
+      load();
+    } catch (e: any) {
+      alert('削除に失敗: ' + e.message);
+    }
+  };
+
   const toggleCap = async (routeId: number) => {
     if (capOpenId === routeId) { setCapOpenId(null); return; }
     try {
@@ -219,6 +229,7 @@ export default function AdminSchedulesPage() {
             <button className="btn secondary small" onClick={() => openEdit(r.id)}>
               {editId === r.id ? '編集を閉じる' : '✏️ 予定を編集'}
             </button>
+            <button className="btn danger small" onClick={() => del(r)}>🗑 予定を削除</button>
           </div>
           {capOpenId === r.id && capById[r.id] && (
             <div style={{ marginTop: 10, borderTop: '1px solid #eee', paddingTop: 10 }}>

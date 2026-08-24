@@ -1145,6 +1145,19 @@ app.put('/api/schedules/:id', requireActor, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// 予定・ルートの削除（作成者 or 管理者）。経由地・依頼もCASCADEで削除。
+app.delete('/api/schedules/:id', requireActor, wrap(async (req, res) => {
+  const id = +req.params.id;
+  const { data: route } = await supabase.from('routes').select('created_by_member_id').eq('id', id).single();
+  if (!route) return res.status(404).json({ error: 'not found' });
+  if (req.actor.kind === 'member' && route.created_by_member_id !== req.actor.member.id) {
+    return res.status(403).json({ error: '作成者のみ削除できます' });
+  }
+  const { error } = await supabase.from('routes').delete().eq('id', id);
+  if (error) throw error;
+  res.json({ ok: true });
+}));
+
 // 自分が作成した予定・下書き一覧（マイページ用）
 app.get('/api/my/schedules', requireMember, wrap(async (req, res) => {
   const { data, error } = await supabase

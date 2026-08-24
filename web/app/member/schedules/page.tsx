@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { memberGet, memberPost, memberPut, getMemberSession, statusLabel, statusColor } from '@/lib/api';
+import { memberGet, memberPost, memberPut, memberDelete, getMemberSession, statusLabel, statusColor } from '@/lib/api';
 import CapacityView, { type CapacitySchedule } from '@/components/CapacityView';
 
 type MyRoute = {
@@ -115,6 +115,16 @@ export default function MySchedulesPage() {
     }
   };
 
+  const del = async (r: MyRoute) => {
+    if (!confirm(`「${r.name}」を削除しますか？\n経由地・集荷依頼もすべて削除されます。取り消せません。`)) return;
+    try {
+      await memberDelete(`/api/schedules/${r.id}`);
+      load();
+    } catch (e: any) {
+      alert('削除に失敗: ' + e.message);
+    }
+  };
+
   const toggleReqs = async (r: MyRoute) => {
     if (openId === r.id) { setOpenId(null); return; }
     try {
@@ -199,6 +209,9 @@ export default function MySchedulesPage() {
               <span className="badge" style={{ background: statusColor(r.status) }}>{statusLabel(r.status)}</span>
               <span style={{ marginLeft: 'auto', fontSize: 12, color: '#7a8a99' }}>再利用可</span>
             </div>
+            <div style={{ marginTop: 8 }}>
+              <button className="btn danger small" onClick={() => del(r)}>🗑 削除</button>
+            </div>
           </div>
         ))}
 
@@ -227,6 +240,7 @@ export default function MySchedulesPage() {
                 <button className="btn secondary small" onClick={() => (editId === r.id ? setEditId(null) : openEdit(r))}>
                   {editId === r.id ? '編集を閉じる' : '✏️ 予定を編集'}
                 </button>
+                <button className="btn danger small" onClick={() => del(r)}>🗑 予定を削除</button>
               </div>
             )}
             {editId === r.id && (
