@@ -1153,6 +1153,10 @@ app.delete('/api/schedules/:id', requireActor, wrap(async (req, res) => {
   if (req.actor.kind === 'member' && route.created_by_member_id !== req.actor.member.id) {
     return res.status(403).json({ error: '作成者のみ削除できます' });
   }
+  // 外部キーのCASCADE設定に依存せず、子レコードを明示的に削除してから本体を削除
+  await supabase.from('pickup_requests').delete().eq('route_id', id);
+  await supabase.from('vehicle_positions').delete().eq('route_id', id);
+  await supabase.from('route_stops').delete().eq('route_id', id);
   const { error } = await supabase.from('routes').delete().eq('id', id);
   if (error) throw error;
   res.json({ ok: true });
